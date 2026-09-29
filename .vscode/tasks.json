@@ -1,0 +1,194 @@
+{
+    "version": "2.0.0",
+    // 全局注入 MSYS2 工具链路径，辅助任务执行
+    "options": {
+        "env": {
+            "PATH": "C:/msys64/ucrt64/bin;C:/msys64/usr/bin;${env:PATH}"
+        }
+    },
+    "tasks": [
+        // ---- 配置（使用 CMakePresets 的 Debug preset） ----
+        {
+            "label": "configure",
+            "type": "shell",
+            "command": "C:/msys64/msys2_shell.cmd",
+            "args": [
+                "-defterm",
+                "-no-start",
+                "-use-full-path",
+                "-here",
+                "-ucrt64",
+                "-c",
+                "cmake --preset Debug"
+            ],
+            "presentation": {
+                "reveal": "never",
+                "echo": false,
+                "focus": false
+            },
+            "group": "build",
+            "detail": "CMake 配置(基于 CMakePresets.json)"
+        },
+        // ---- 构建（launch.json 的 preLaunchTask 依赖此任务） ----
+        {
+            "label": "build",
+            "type": "shell",
+            "command": "C:/msys64/msys2_shell.cmd",
+            "args": [
+                "-defterm",
+                "-no-start",
+                "-use-full-path",
+                "-here",
+                "-ucrt64",
+                "-c",
+                "cmake --build build/Debug"
+            ],
+            "presentation": {
+                "reveal": "never",
+                "echo": false,
+                "focus": false
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "dependsOn": [
+                "configure"
+            ],
+            "problemMatcher": {
+                "owner": "cpp",
+                "fileLocation": [
+                    "relative",
+                    "${workspaceFolder}"
+                ],
+                "pattern": {
+                    "regexp": "^(.*):(\\d+):(\\d+):\\s+(warning|error|fatal error):\\s+(.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "severity": 4,
+                    "message": 5
+                }
+            }
+        },
+        // ---- 烧录（J-Link / ST-Link / DAP-Link） ----
+        {
+            "label": "flash-jlink",
+            "type": "shell",
+            "command": "C:/msys64/msys2_shell.cmd",
+            "args": [
+                "-defterm",
+                "-no-start",
+                "-use-full-path",
+                "-here",
+                "-ucrt64",
+                "-c",
+                "openocd -f openocd_jlink.cfg -c \"program build/Debug/E.elf verify reset exit\""
+            ],
+            "presentation": {
+                "reveal": "never",
+                "echo": false,
+                "focus": false
+            },
+            "dependsOn": [
+                "build"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "flash-stlink",
+            "type": "shell",
+            "command": "C:/msys64/msys2_shell.cmd",
+            "args": [
+                "-defterm",
+                "-no-start",
+                "-use-full-path",
+                "-here",
+                "-ucrt64",
+                "-c",
+                "openocd -f openocd_stlink.cfg -c \"program build/Debug/E.elf verify reset exit\""
+            ],
+            "presentation": {
+                "reveal": "never",
+                "echo": false,
+                "focus": false
+            },
+            "dependsOn": [
+                "build"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "flash-daplink",
+            "type": "shell",
+            "command": "C:/msys64/msys2_shell.cmd",
+            "args": [
+                "-defterm",
+                "-no-start",
+                "-use-full-path",
+                "-here",
+                "-ucrt64",
+                "-c",
+                "openocd -f openocd_dap.cfg -c \"program build/Debug/E.elf verify reset exit\""
+            ],
+            "presentation": {
+                "reveal": "never",
+                "echo": false,
+                "focus": false
+            },
+            "dependsOn": [
+                "build"
+            ],
+            "problemMatcher": []
+        },
+        // ---- 工具：查看固件大小 / 生成反汇编 ----
+        {
+            "label": "size",
+            "type": "shell",
+            "command": "C:/msys64/msys2_shell.cmd",
+            "args": [
+                "-defterm",
+                "-no-start",
+                "-use-full-path",
+                "-here",
+                "-ucrt64",
+                "-c",
+                "arm-none-eabi-size -A build/Debug/E.elf"
+            ],
+            "presentation": {
+                "reveal": "never",
+                "echo": false,
+                "focus": false
+            },
+            "dependsOn": [
+                "build"
+            ],
+            "detail": "查看 RAM/Flash 占用",
+            "problemMatcher": []
+        },
+        {
+            "label": "disasm",
+            "type": "shell",
+            "command": "C:/msys64/msys2_shell.cmd",
+            "args": [
+                "-defterm",
+                "-no-start",
+                "-use-full-path",
+                "-here",
+                "-ucrt64",
+                "-c",
+                "arm-none-eabi-objdump -d -S build/Debug/E.elf > build/Debug/disasm.S"
+            ],
+            "presentation": {
+                "reveal": "never",
+                "echo": false,
+                "focus": false
+            },
+            "dependsOn": [
+                "build"
+            ],
+            "detail": "生成 C+汇编混合反汇编",
+            "problemMatcher": []
+        }
+    ]
+}

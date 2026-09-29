@@ -1,0 +1,35 @@
+# ============================================================
+# clang-tidy 静态检查配置（clangd --clang-tidy 自动读取）
+# 精简版：只检查关键 Bug 和性能问题，不查命名风格
+# ============================================================
+
+# 开启关键 Bug / 性能检查，关闭嵌入式里噪音较大的命名和边界类检查。
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-narrowing-conversions,
+  -bugprone-reserved-identifier,
+  -bugprone-assert-side-effect,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-branch-clone,
+  performance-*,
+  -performance-no-int-to-ptr,
+  -readability-identifier-naming,
+  -misc-unused-*,
+  cppcoreguidelines-narrowing-conversions,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic
+
+# 选项配置
+CheckOptions:
+  # 断言宏：告诉检查器 assert_param 是断言宏（用于 bugprone-assert-side-effect）
+  - key:   bugprone-assert-side-effect.AssertMacros
+    value: assert_param
+
+  # 命名风格（虽然关闭检查，但保留默认值以防万一）
+  - key:   readability-identifier-naming.VariableCase
+    value: lower_case
+  - key:   readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key:   readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE

@@ -1,0 +1,67 @@
+# ============================
+# 构建产物（每个成员环境独立生成）
+# ============================
+build/
+Debug/
+Release/
+*.o
+*.obj
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+*.d
+*.cmake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.ninja
+.ninja_deps
+.ninja_log
+compile_commands.json      # 不提交，每个成员自行生成
+
+# ============================
+# 开发环境（需保留共享的 .vscode 配置）
+# ============================
+.vscode/.DS_Store          # 仅忽略 macOS 垃圾文件
+.vscode/*.code-snippets    # 个人代码片段不共享
+!.vscode/extensions.json   # 保留推荐扩展
+!.vscode/settings.json     # 保留工作区设置
+!.vscode/launch.json       # 保留调试配置
+!.vscode/tasks.json        # 保留任务配置
+
+# ============================
+# 临时文件
+# ============================
+*.swp
+*.swo
+*~
+*.bak
+.DS_Store
+Thumbs.db
+
+# ============================
+# 调试 / 日志
+# ============================
+*.log
+*.trace
+*.dump
+*.core
+*.crash
+
+# ============================
+# 项目生成的辅助文件（不提交）
+# ============================
+disasm.S
+size_report.txt
+*.pdf
+*.docx
+
+# ============================
+# CubeMX 临时文件（保留 .ioc）
+# ============================
+*.ioc.bak
+*.html
+*.tmp

@@ -1,0 +1,51 @@
+# ============================================================
+# clang-format 配置文件（保存时自动格式化）
+# 基于 LLVM 风格，适配 STM32 HAL 库 C 代码习惯
+# ============================================================
+
+# 基础风格：LLVM（以此为基准进行微调）
+BasedOnStyle: LLVM
+Language: C
+
+# ---- 缩进与制表符 ----
+IndentWidth: 4          # 缩进 4 格
+TabWidth: 4             # Tab 宽度 4
+UseTab: Always          # 使用 Tab 而非空格（嵌入式惯例）
+ContinuationIndentWidth: 4  # 换行缩进 4 格
+
+# ---- 行宽 ----
+ColumnLimit: 120        # 行宽 120（HAL 函数名较长）
+
+# ---- 对齐（提升可读性） ----
+AlignConsecutiveAssignments: Consecutive   # 连续赋值对齐
+AlignConsecutiveMacros: Consecutive        # 连续宏定义对齐
+AlignConsecutiveDeclarations: Consecutive  # 连续声明对齐
+AlignTrailingComments: true                # 行尾注释对齐
+AlignEscapedNewlines: Left                 # 反斜杠换行左对齐
+
+# ---- 大括号：K&R 风格（同行） ----
+BreakBeforeBraces: Attach
+
+# ---- 指针：靠右（uint32_t* ptr） ----
+PointerAlignment: Right
+
+# ---- 短语句允许单行 ----
+AllowShortIfStatementsOnASingleLine: WithoutElse   # if 无 else 可单行
+AllowShortFunctionsOnASingleLine: Inline           # 内联函数可单行
+AllowShortLoopsOnASingleLine: false                # 循环不允许单行
+AllowShortBlocksOnASingleLine: Empty               # 空块可单行
+
+# ---- 函数参数换行 ----
+AlignAfterOpenBracket: Align          # 括号后对齐
+BinPackArguments: true                # 参数紧凑排列
+BinPackParameters: true               # 参数紧凑排列
+
+# ---- 头文件排序 ----
+IncludeBlocks: Regroup                # 按类别分组
+SortIncludes: CaseInsensitive         # 忽略大小写排序
+
+# ---- 空格 ----
+SpaceAfterCStyleCast: true            # C 风格转换后加空格
+SpaceBeforeAssignmentOperators: true  # 赋值运算符前加空格
+SpaceBeforeParens: ControlStatements  # 控制语句括号前加空格
+SpacesInParentheses: false            # 括号内不加空格

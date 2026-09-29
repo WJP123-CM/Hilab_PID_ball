@@ -1,0 +1,136 @@
+{
+    // ============================================================
+    // 工作区设置（随项目迁移，新机器 clone 后自动生效）
+    // 适用：STM32F103C8 + MSYS2 UCRT64 + OpenOCD + CMakePresets
+    // ============================================================
+    // ===================== 工具链路径 =====================
+    // 所有外部工具的绝对路径，便于移植和调试
+    "cortex-debug.openocdPath": "C:/msys64/ucrt64/bin/openocd.exe",
+    "cortex-debug.gdbPath": "C:/msys64/ucrt64/bin/gdb-multiarch.exe",
+    "cortex-debug.armToolchainPath": "C:/msys64/ucrt64/bin",
+    "clangd.path": "C:/msys64/ucrt64/bin/clangd.exe",
+    "cmake.cmakePath": "C:/msys64/ucrt64/bin/cmake.exe",
+    // ===================== clangd 语言服务 =====================
+    // 仅开启基础能力，不启用 clang-tidy 和 query-driver（稳定后逐步添加）
+    "clangd.arguments": [
+        "--compile-commands-dir=${workspaceFolder}/build/Debug", // 编译数据库路径
+        "--background-index", // 后台持续建索引
+        "--header-insertion=iwyu", // 按 IWYU 风格补全头文件
+        "--completion-style=detailed", // 补全显示详细信息
+        "--pch-storage=memory", // PCH 存内存，加快响应
+        "--fallback-style=LLVM", // 格式化后备风格
+        "-j=8", // 并行线程数
+        "--log=info", // 日志级别（排查时可改 verbose）
+        "--clang-tidy",
+        "--query-driver=C:/msys64/ucrt64/bin/arm-none-eabi-gcc.exe"
+    ],
+    "C_Cpp.intelliSenseEngine": "Disabled",
+    "C_Cpp.errorSquiggles": "Disabled",
+    "clangd.checkUpdates": true, // 自动检查更新
+    "clangd.onConfigChanged": "restart", // compile_commands.json 变化时重启
+    // ===================== 文件关联与排除 =====================
+    // 强制 .h 为 C 语言（HAL 库是纯 C），特定后缀关联对应语法
+    "files.associations": {
+        "*.h": "c",
+        "*.s": "arm",
+        "*.S": "arm",
+        "*.ld": "linkerscript",
+        "*.ioc": "xml",
+        "*.cfg": "ini"
+    },
+    // 文件树中隐藏构建产物，保持清爽
+    "files.exclude": {
+        "**/*.o": true,
+        "**/*.map": true,
+        "**/*.svd": true,
+        "**/*.ioc": true,
+        "**/*.mxproject": true,
+        "**/*.SFR": true,
+    },
+    "files.watcherExclude": {
+        "**/build/**": true, // 不监听 build 目录，降低 CPU 占用
+        "**/.git/objects/**": true
+    },
+    // ===================== 终端（默认 MSYS2 UCRT64） =====================
+    "terminal.integrated.profiles.windows": {
+        "MSYS2 UCRT64": {
+            "path": "C:/msys64/usr/bin/bash.exe",
+            "args": [
+                "--login",
+                "-i"
+            ],
+            "env": {
+                "MSYSTEM": "UCRT64",
+                "CHERE_INVOKING": "1", // 保持在当前目录
+                "MSYS2_PATH_TYPE": "inherit" // 继承 Windows PATH
+            },
+            "icon": "terminal-bash"
+        }
+    },
+    "terminal.integrated.defaultProfile.windows": "MSYS2 UCRT64",
+    // ===================== CMake 构建配置 =====================
+    // 配合 CMakePresets.json 使用 Ninja 后端
+    "cmake.configureOnOpen": true, // 打开项目自动配置
+    "cmake.buildBeforeRun": true, // 运行前自动构建
+    "cmake.buildDirectory": "${workspaceFolder}/build/Debug",
+    "cmake.generator": "Ninja",
+    "cmake.parallelJobs": 0, // 自动全核编译
+    "cmake.configureSettings": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON" // 导出 compile_commands.json
+    },
+    // ===================== 编辑器格式化与保存动作 =====================
+    "[c]": {
+        "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd",
+        "editor.formatOnSave": true,
+        "editor.tabSize": 4,
+        "editor.insertSpaces": false,
+        "editor.codeActionsOnSave": {
+            "source.fixAll": "explicit", // 保存时应用 clang-tidy 自动修复
+            "source.organizeIncludes": "explicit" // 保存时自动排序头文件
+        }
+    },
+    // ===================== Todo Tree（TODO/FIXME 管理） =====================
+    "todo-tree.ripgrep.ripgrep": "C:/msys64/ucrt64/bin/rg.exe", // 指定 rg 路径
+    "todo-tree.general.tags": [
+        "TODO",
+        "FIXME",
+        "BUG",
+        "HACK",
+        "NOTE",
+        "OPTIMIZE",
+        "REVIEW"
+    ],
+    "todo-tree.highlights.customHighlight": {
+        "TODO": {
+            "iconColour": "#4d78cc",
+            "background": "#4d78cc",
+            "foreground": "#ffffff"
+        },
+        "FIXME": {
+            "iconColour": "#cc5555",
+            "background": "#cc5555",
+            "foreground": "#ffffff"
+        },
+        "BUG": {
+            "iconColour": "#e06c75",
+            "background": "#e06c75",
+            "foreground": "#ffffff"
+        }
+    },
+    // ===================== Error Lens（行内错误高亮） =====================
+    "errorLens.enabledDiagnosticLevels": [
+        "error",
+        "warning"
+    ],
+    "errorLens.gutterIconsEnabled": true,
+    // ===================== 搜索排除 =====================
+    "search.exclude": {
+        "**/build": true,
+        "**/*.o": true,
+        "**/*.elf": true,
+        "**/*.map": true
+    },
+    // ===================== 调试器通用设置 =====================
+    "cortex-debug.variableUseNaturalFormat": false, // 按 C 原始格式显示变量
+    "debug.onTaskErrors": "debugAnyway" // ⚠️ 预构建失败仍尝试调试（排查用）
+}

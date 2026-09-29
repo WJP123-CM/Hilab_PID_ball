@@ -1,0 +1,35 @@
+{
+    // ============================================================
+    // 工作区推荐扩展（新同事/新机器 clone 项目后会弹窗提示安装）
+    // ============================================================
+    "recommendations": [
+        // -------- 语言服务 --------
+        "llvm-vs-code-extensions.vscode-clangd", // C/C++ 补全/跳转/lint（替代 ms-vscode.cpptools）
+        "ms-vscode.cmake-tools", // CMake 构建/配置/语法高亮
+        // -------- 调试 --------
+        "marus25.cortex-debug", // ARM Cortex-M 调试器核心
+        "mcu-debug.debug-tracker-vscode", // 调试变量追踪视图
+        "mcu-debug.memory-view", // 内存/Flash 内容查看
+        "mcu-debug.peripheral-viewer", // 外设寄存器查看（读 SVD 文件）
+        "mcu-debug.rtos-views", // FreeRTOS 任务/队列/信号量视图
+        "eclipse-cdt.peripheral-inspector", // CDT 外设寄存器查看（解析更全）
+        // -------- 嵌入式工具 --------
+        "ms-vscode.vscode-serial-monitor", // 串口监视器（UART 调试）
+        // -------- 语法高亮（STM32 专用文件类型）--------
+        "dan-c-underwood.arm", // ARM 汇编语法高亮（.s 启动文件）
+        "ZixuanWang.linkerscript", // GNU 链接脚本语法高亮（.ld 文件）
+        // -------- 效率工具 --------
+        "usernamehw.errorlens", // 错误行内高亮
+        "aaron-bond.better-comments",
+        "gruntfuggly.todo-tree", // 侧边栏 TODO/FIXME 汇总树
+        // -------- Git / 外观 --------
+        "mhutchie.git-graph", // Git 提交图可视化
+        "pkief.material-icon-theme", // 文件图标
+        "zhuangtongfa.material-theme" // One Dark Pro 主题
+    ],
+    // 不推荐的扩展（项目打开时提示禁用）
+    "unwantedRecommendations": [
+        "ms-vscode.cpptools", // 与 clangd 冲突，且索引极慢
+        "twxs.cmake" // 功能已被 ms-vscode.cmake-tools 覆盖
+    ]
+}

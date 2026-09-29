@@ -1,0 +1,145 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        // ===== J-Link + OpenOCD 调试（launch）=====
+        {
+            "name": "JLink",
+            "cwd": "${workspaceFolder}",
+            "executable": "${workspaceFolder}/build/Debug/E.elf",
+            "request": "launch",
+            "type": "cortex-debug",
+            "device": "STM32F103C8",
+            "svdFile": "${workspaceFolder}/STM32F103xx.svd",
+            "gdbPath": "C:/msys64/ucrt64/bin/gdb-multiarch.exe",
+            "armToolchainPath": "C:/msys64/ucrt64/bin",
+            "servertype": "openocd",
+            "serverpath": "C:/msys64/ucrt64/bin/openocd.exe",
+            "configFiles": [
+                "openocd_jlink.cfg"
+            ],
+            "runToEntryPoint": "main",
+            "preLaunchTask": "build", // 关键修正
+            "liveWatch": {
+                "enabled": true,
+                "samplesPerSecond": 4
+            }
+        },
+        // ===== ST-Link + OpenOCD 调试（launch）=====
+        {
+            "name": "STLink",
+            "cwd": "${workspaceFolder}",
+            "executable": "${workspaceFolder}/build/Debug/E.elf",
+            "request": "launch",
+            "type": "cortex-debug",
+            "device": "STM32F103C8",
+            "svdFile": "${workspaceFolder}/STM32F103xx.svd",
+            "gdbPath": "C:/msys64/ucrt64/bin/gdb-multiarch.exe",
+            "armToolchainPath": "C:/msys64/ucrt64/bin",
+            "servertype": "openocd",
+            "serverpath": "C:/msys64/ucrt64/bin/openocd.exe",
+            "configFiles": [
+                "openocd_stlink.cfg"
+            ],
+            "runToEntryPoint": "main",
+            "preLaunchTask": "build",
+            "liveWatch": {
+                "enabled": true,
+                "samplesPerSecond": 4
+            }
+        },
+        // ===== DAP-Link + OpenOCD 调试（launch，手动复位）=====
+        {
+            "name": "DAPlink",
+            "cwd": "${workspaceFolder}",
+            "executable": "${workspaceFolder}/build/Debug/E.elf",
+            "request": "launch",
+            "type": "cortex-debug",
+            "device": "STM32F103C8",
+            "svdFile": "${workspaceFolder}/STM32F103xx.svd",
+            "gdbPath": "C:/msys64/ucrt64/bin/gdb-multiarch.exe",
+            "armToolchainPath": "C:/msys64/ucrt64/bin",
+            "servertype": "openocd",
+            "serverpath": "C:/msys64/ucrt64/bin/openocd.exe",
+            "configFiles": [
+                "openocd_dap.cfg"
+            ],
+            "postLaunchCommands": [
+                "monitor reset halt",
+                "break main",
+                "continue"
+            ],
+            "preLaunchTask": "build",
+            "liveWatch": {
+                "enabled": true,
+                "samplesPerSecond": 4
+            }
+        },
+        // ===== 附加调试（Attach）=====
+        {
+            "name": "JLink-attach",
+            "cwd": "${workspaceFolder}",
+            "executable": "${workspaceFolder}/build/Debug/E.elf",
+            "request": "attach",
+            "type": "cortex-debug",
+            "device": "STM32F103C8",
+            "svdFile": "${workspaceFolder}/STM32F103xx.svd",
+            "gdbPath": "C:/msys64/ucrt64/bin/gdb-multiarch.exe",
+            "armToolchainPath": "C:/msys64/ucrt64/bin",
+            "servertype": "openocd",
+            "serverpath": "C:/msys64/ucrt64/bin/openocd.exe",
+            "configFiles": [
+                "openocd_jlink.cfg"
+            ]
+        },
+        {
+            "name": "STLink-attach",
+            "cwd": "${workspaceFolder}",
+            "executable": "${workspaceFolder}/build/Debug/E.elf",
+            "request": "attach",
+            "type": "cortex-debug",
+            "device": "STM32F103C8",
+            "svdFile": "${workspaceFolder}/STM32F103xx.svd",
+            "gdbPath": "C:/msys64/ucrt64/bin/gdb-multiarch.exe",
+            "armToolchainPath": "C:/msys64/ucrt64/bin",
+            "servertype": "openocd",
+            "serverpath": "C:/msys64/ucrt64/bin/openocd.exe",
+            "configFiles": [
+                "openocd_stlink.cfg"
+            ]
+        },
+        {
+            "name": "DAPlink-attach",
+            "cwd": "${workspaceFolder}",
+            "executable": "${workspaceFolder}/build/Debug/E.elf",
+            "request": "attach",
+            "type": "cortex-debug",
+            "device": "STM32F103C8",
+            "svdFile": "${workspaceFolder}/STM32F103xx.svd",
+            "gdbPath": "C:/msys64/ucrt64/bin/gdb-multiarch.exe",
+            "armToolchainPath": "C:/msys64/ucrt64/bin",
+            "servertype": "openocd",
+            "serverpath": "C:/msys64/ucrt64/bin/openocd.exe",
+            "configFiles": [
+                "openocd_dap.cfg"
+            ]
+        },
+        // ===== 仅烧录（Flash Only）=====
+        {
+            "name": "Flash Only (J-Link)",
+            "type": "cortex-debug",
+            "request": "launch",
+            "cwd": "${workspaceFolder}",
+            "executable": "${workspaceFolder}/build/Debug/E.elf",
+            "servertype": "openocd",
+            "serverpath": "C:/msys64/ucrt64/bin/openocd.exe",
+            "gdbPath": "C:/msys64/ucrt64/bin/gdb-multiarch.exe",
+            "armToolchainPath": "C:/msys64/ucrt64/bin",
+            "device": "STM32F103C8",
+            "configFiles": [
+                "openocd_jlink.cfg"
+            ],
+            "preLaunchTask": "build",
+            "runToEntryPoint": "main"
+        }
+    ]
+}
