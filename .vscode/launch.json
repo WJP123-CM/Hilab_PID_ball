@@ -5,7 +5,7 @@
         {
             "name": "JLink",
             "cwd": "${workspaceFolder}",
-            "executable": "${workspaceFolder}/build/Debug/E.elf",
+            "executable": "${workspaceFolder}/build/Debug/Hilab_PID.elf",
             "request": "launch",
             "type": "cortex-debug",
             "device": "STM32F103C8",
@@ -24,11 +24,11 @@
                 "samplesPerSecond": 4
             }
         },
-        // ===== ST-Link + OpenOCD 调试（launch）=====
+        // ===== ST-Link + OpenO试（launch）=====
         {
             "name": "STLink",
             "cwd": "${workspaceFolder}",
-            "executable": "${workspaceFolder}/build/Debug/E.elf",
+            "executable": "${workspaceFolder}/build/Debug/Hilab_PID.elf",
             "request": "launch",
             "type": "cortex-debug",
             "device": "STM32F103C8",
@@ -51,7 +51,7 @@
         {
             "name": "DAPlink",
             "cwd": "${workspaceFolder}",
-            "executable": "${workspaceFolder}/build/Debug/E.elf",
+            "executable": "${workspaceFolder}/build/Debug/Hilab_PID.elf",
             "request": "launch",
             "type": "cortex-debug",
             "device": "STM32F103C8",
@@ -78,7 +78,7 @@
         {
             "name": "JLink-attach",
             "cwd": "${workspaceFolder}",
-            "executable": "${workspaceFolder}/build/Debug/E.elf",
+            "executable": "${workspaceFolder}/build/Debug/Hilab_PID.elf",
             "request": "attach",
             "type": "cortex-debug",
             "device": "STM32F103C8",
@@ -94,7 +94,7 @@
         {
             "name": "STLink-attach",
             "cwd": "${workspaceFolder}",
-            "executable": "${workspaceFolder}/build/Debug/E.elf",
+            "executable": "${workspaceFolder}/build/Debug/Hilab_PID.elf",
             "request": "attach",
             "type": "cortex-debug",
             "device": "STM32F103C8",
@@ -110,7 +110,7 @@
         {
             "name": "DAPlink-attach",
             "cwd": "${workspaceFolder}",
-            "executable": "${workspaceFolder}/build/Debug/E.elf",
+            "executable": "${workspaceFolder}/build/Debug/Hilab_PID.elf",
             "request": "attach",
             "type": "cortex-debug",
             "device": "STM32F103C8",
@@ -129,7 +129,7 @@
             "type": "cortex-debug",
             "request": "launch",
             "cwd": "${workspaceFolder}",
-            "executable": "${workspaceFolder}/build/Debug/E.elf",
+            "executable": "${workspaceFolder}/build/Debug/Hilab_PID.elf",
             "servertype": "openocd",
             "serverpath": "C:/msys64/ucrt64/bin/openocd.exe",
             "gdbPath": "C:/msys64/ucrt64/bin/gdb-multiarch.exe",
@@ -137,6 +137,24 @@
             "device": "STM32F103C8",
             "configFiles": [
                 "openocd_jlink.cfg"
+            ],
+            "preLaunchTask": "build",
+            "runToEntryPoint": "main"
+        },
+        // ===== 仅烧录（Flash Only，ST-Link）=====
+        {
+            "name": "Flash Only (ST-Link)",
+            "type": "cortex-debug",
+            "request": "launch",
+            "cwd": "${workspaceFolder}",
+            "executable": "${workspaceFolder}/build/Debug/Hilab_PID.elf",
+            "servertype": "openocd",
+            "serverpath": "C:/msys64/ucrt64/bin/openocd.exe",
+            "gdbPath": "C:/msys64/ucrt64/bin/gdb-multiarch.exe",
+            "armToolchainPath": "C:/msys64/ucrt64/bin",
+            "device": "STM32F103C8",
+            "configFiles": [
+                "openocd_stlink.cfg"
             ],
             "preLaunchTask": "build",
             "runToEntryPoint": "main"

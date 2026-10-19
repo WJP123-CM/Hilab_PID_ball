@@ -7,7 +7,6 @@
         }
     },
     "tasks": [
-        // ---- 配置（使用 CMakePresets 的 Debug preset） ----
         {
             "label": "configure",
             "type": "shell",
@@ -29,7 +28,6 @@
             "group": "build",
             "detail": "CMake 配置(基于 CMakePresets.json)"
         },
-        // ---- 构建（launch.json 的 preLaunchTask 依赖此任务） ----
         {
             "label": "build",
             "type": "shell",
@@ -49,7 +47,7 @@
                 "focus": false
             },
             "group": {
-                "kind": "build",
+                "kind": "test",
                 "isDefault": true
             },
             "dependsOn": [
@@ -71,7 +69,6 @@
                 }
             }
         },
-        // ---- 烧录（J-Link / ST-Link / DAP-Link） ----
         {
             "label": "flash-jlink",
             "type": "shell",
@@ -83,7 +80,7 @@
                 "-here",
                 "-ucrt64",
                 "-c",
-                "openocd -f openocd_jlink.cfg -c \"program build/Debug/E.elf verify reset exit\""
+                "openocd -f openocd_jlink.cfg -c \"program build/Debug/Hilab_PID.elf verify reset exit\""
             ],
             "presentation": {
                 "reveal": "never",
@@ -106,7 +103,7 @@
                 "-here",
                 "-ucrt64",
                 "-c",
-                "openocd -f openocd_stlink.cfg -c \"program build/Debug/E.elf verify reset exit\""
+                "openocd -f openocd_stlink.cfg -c \"program build/Debug/Hilab_PID.elf verify reset exit\""
             ],
             "presentation": {
                 "reveal": "never",
@@ -129,7 +126,7 @@
                 "-here",
                 "-ucrt64",
                 "-c",
-                "openocd -f openocd_dap.cfg -c \"program build/Debug/E.elf verify reset exit\""
+                "openocd -f openocd_dap.cfg -c \"program build/Debug/Hilab_PID.elf verify reset exit\""
             ],
             "presentation": {
                 "reveal": "never",
@@ -141,7 +138,6 @@
             ],
             "problemMatcher": []
         },
-        // ---- 工具：查看固件大小 / 生成反汇编 ----
         {
             "label": "size",
             "type": "shell",
@@ -153,7 +149,7 @@
                 "-here",
                 "-ucrt64",
                 "-c",
-                "arm-none-eabi-size -A build/Debug/E.elf"
+                "arm-none-eabi-size -A build/Debug/Hilab_PID.elf"
             ],
             "presentation": {
                 "reveal": "never",
@@ -177,7 +173,7 @@
                 "-here",
                 "-ucrt64",
                 "-c",
-                "arm-none-eabi-objdump -d -S build/Debug/E.elf > build/Debug/disasm.S"
+                "arm-none-eabi-objdump -d -S build/Debug/Hilab_PID.elf > build/Debug/disasm.S"
             ],
             "presentation": {
                 "reveal": "never",
