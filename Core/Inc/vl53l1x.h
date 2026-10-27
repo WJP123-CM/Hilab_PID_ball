@@ -28,13 +28,28 @@ VL53L1_Error VL53L1X_Init(void);
 /**
  * @brief  阻塞读取一帧测距结果，并自动清除中断、启动下一帧测量。
  *         启动后的第一帧会被内部丢弃（官方建议）。
- * @param  distance_mm  : 输出，经中值滤波(窗口5)后的距离（mm）。传感器上报无效时
- *                        保持上一次滤波输出，需结合 range_status 判断是否可信。
+ * @param  distance_mm  : 输出，传感器本帧原始距离（mm），**未经任何滤波**；
+ *                        无效帧的数值不可信，须结合 range_status 判断，
+ *                        滤波由上层（PID 环节）自行处理。
  * @param  range_status : 输出，状态码。
- *         - 0    : 数据有效（VL53L1_RANGESTATUS_RANGE_VALID）
+ *         - 0    : 有效（RANGE_VALID）
+ *         - 1    : Sigma 失败（SIGMA_FAIL，测量离散度过大）
+ *         - 2    : 信号失败（SIGNAL_FAIL，回波过弱）
+ *         - 3    : 低于最小量程被裁剪（RANGE_VALID_MIN_RANGE_CLIPPED）
+ *         - 4    : 相位越界（OUTOFBOUNDS_FAIL）
+ *         - 5    : 硬件失败（HARDWARE_FAIL，片内自检/看门狗报错，偶发可忽略）
+ *         - 6    : 有效但未做绕回检查（RANGE_VALID_NO_WRAP_CHECK_FAIL）
+ *         - 7    : 绕回/相位一致性失败（WRAP_TARGET_FAIL，回波弱/超量程/有串扰）
+ *         - 8    : 内部算法下溢/溢出（PROCESSING_FAIL）
+ *         - 9    : 串扰信号失败（XTALK_SIGNAL_FAIL）
+ *         - 10   : 启动首帧（SYNCRONISATION_INT，忽略数据）
+ *         - 11   : 脉冲合并（RANGE_VALID_MERGED_PULSE）
+ *         - 12   : 有目标但缺信号（TARGET_PRESENT_LACK_OF_SIGNAL）
+ *         - 13   : ROI 无效（MIN_RANGE_FAIL）
+ *         - 14   : 负距离无效（RANGE_INVALID）
+ *         - 255  : 无更新（NONE）
  *         - -1   : 等待数据就绪超时
  *         - -2   : 读取测量数据失败
- *         - 其他 : 传感器上报的测距状态（信号弱/超量程等），距离值仅供参考
  * @retval VL53L1_ERROR_NONE 正常取到一帧（即使 range_status 非 0 也算成功取到）；
  *         其他值为底层通信错误。
  */

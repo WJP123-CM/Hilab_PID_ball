@@ -17,46 +17,6 @@
 static VL53L1_Dev_t s_dev;				/* 设备句柄 */
 static const char  *s_last_step = "OK"; /* 最近一次失败的步骤名 */
 
-/* ===================== 测距滤波（中值滤波） =============================== */
-/* 对连续测量值取中值，能滤除单帧跳变/毛刺。窗口须为奇数。 */
-#define VL53L1X_FILTER_WINDOW 5U
-
-static int16_t s_filt_buf[VL53L1X_FILTER_WINDOW]; /* 样本队列（队尾为最新） */
-static uint8_t s_filt_len	   = 0;				  /* 已填充样本数 */
-static int16_t s_last_filtered = 0;				  /* 最近一次滤波输出（无效帧保持） */
-
-static int16_t VL53L1X_MedianFilter(int16_t sample) {
-	uint8_t i, j, n;
-	int16_t tmp[VL53L1X_FILTER_WINDOW];
-
-	/* 新样本入队（队尾），其余前移 */
-	for (i = 1U; i < VL53L1X_FILTER_WINDOW; i++) {
-		s_filt_buf[i - 1U] = s_filt_buf[i];
-	}
-	s_filt_buf[VL53L1X_FILTER_WINDOW - 1U] = sample;
-	if (s_filt_len < VL53L1X_FILTER_WINDOW) {
-		s_filt_len++;
-	}
-
-	/* 取最近 s_filt_len 个样本，冒泡排序后输出中值 */
-	n = s_filt_len;
-	for (i = 0; i < n; i++) {
-		tmp[i] = s_filt_buf[VL53L1X_FILTER_WINDOW - n + i];
-	}
-	for (i = 0; i + 1U < n; i++) {
-		for (j = 0; j + 1U < n - i; j++) {
-			if (tmp[j] > tmp[j + 1U]) {
-				int16_t t	= tmp[j];
-				tmp[j]		= tmp[j + 1U];
-				tmp[j + 1U] = t;
-			}
-		}
-	}
-
-	s_last_filtered = tmp[n / 2U];
-	return s_last_filtered;
-}
-
 /* ===================== 私有辅助宏 ========================================= */
 /* 执行一步初始化；失败时记录步骤名并跳出。定义成 do-while(0) 以便在 if 块里安全使用 */
 #define VL53_INIT_STEP(expr, step_name) \
@@ -94,7 +54,16 @@ VL53L1_Error VL53L1X_Init(void) {
 	VL53_INIT_STEP(VL53L1_StaticInit(&s_dev), "StaticInit");
 	/* 4. 参考 SPAD 管理（裸模块上电执行一次即可） */
 	VL53_INIT_STEP(VL53L1_PerformRefSpadManagement(&s_dev), "PerformRefSpadManagement");
-	/* 5. 测距参数：关串扰补偿、SHORT 模式（250mm 近距离最优、抗环境光）、
+	/* 5. ROI：缩到中心 8×8 SPAD，min range 从默认 ~70mm 降到 ~35mm
+	 *    （4×4 时信噪比太低，硬件自检频繁炸；8×8 是近距离 min range 与
+	 *    信噪比的合适折中）。TopLeftY≥BotRightY、width/height=间隔数。
+	 *    ROI 越小 → min range 越低 → 信噪比越差 → 远距离越容易 5/7。
+	 *    恢复全阵列：{0, 15, 15, 0}。 */
+	{
+		VL53L1_UserRoi_t roi = {4, 11, 11, 4}; /* 8×8 SPAD：TL(4,11)→BR(11,4)，间隔 7→8 SPAD */
+		VL53_INIT_STEP(VL53L1_SetUserROI(&s_dev, &roi), "SetUserROI");
+	}
+	/* 6. 测距参数：关串扰补偿、SHORT 模式（250mm 近距离最优、抗环境光）、
 	 *    16ms 测量预算、20ms 帧周期 → 50Hz（与 TIM1 的 20ms 采样回调对齐）。
 	 *    注意：库强制要求 帧周期 ≥ 测量预算 + 4ms 保护(见 VL53L1_StartMeasurement)，
 	 *    故 20ms 帧周期下预算取 16ms（20 = 16 + 4）恰好通过校验。 */
@@ -144,12 +113,9 @@ VL53L1_Error VL53L1X_Read(int16_t *distance_mm, int8_t *range_status) {
 		return VL53L1_ERROR_NONE;
 	}
 
-	/* 中值滤波：仅有效帧更新滤波窗口；无效帧保持上次滤波输出 */
-	if (range.RangeStatus == 0) {
-		*distance_mm = VL53L1X_MedianFilter((int16_t) range.RangeMilliMeter);
-	} else {
-		*distance_mm = s_last_filtered;
-	}
+	/* 直接输出原始测量值，不做任何滤波；数据可信度由 range_status 告知，
+	 * 滤波（中值/低通等）统一放到上层 PID 环节处理 */
+	*distance_mm  = (int16_t) range.RangeMilliMeter;
 	*range_status = (int8_t) range.RangeStatus; /* 0 = 有效，其他 = 信号弱/超量程等 */
 	return VL53L1_ERROR_NONE;
 }

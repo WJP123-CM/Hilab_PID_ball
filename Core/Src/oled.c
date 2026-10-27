@@ -40,9 +40,10 @@ static uint8_t s_line_row = 0;
 void OLED_PrintLine(const char *s) {
 	uint8_t y = (uint8_t) (s_line_row * 8U);
 
-	/* 先清整行再写入，避免上次较长文本残留；ssd1306_WriteString 超宽自动截断 */
+	/* 先清整行再写入，避免上次较长文本残留；ssd1306_WriteString 超宽自动截断。
+	 * 局部回写仅本次改动的 1 页显存(128B)，耗时随 I2C2 时钟而定，远快于整屏 1KB */
 	ssd1306_FillRectangle(0, y, SSD1306_WIDTH - 1, y + 7, Black);
 	OLED_Print(0, y, "%s", s);
-	ssd1306_UpdateScreen();
+	ssd1306_UpdateRect(0, y, SSD1306_WIDTH, 8);
 	s_line_row = (uint8_t) ((s_line_row + 1U) % 8U);
 }
