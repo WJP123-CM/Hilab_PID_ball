@@ -50,8 +50,12 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/print.c
     # OLED application layer (home page / printf print / progress bar)
     Core/Src/oled.c
-    # Servo driver (TIM2_CH4 50Hz PWM, 0-180deg, smooth rotation)
-    Core/Src/servo.c
+    # Stepper motor basic driver (D36A: EN/DIR GPIO + TIM2_CH4 STEP pulse)
+    Core/Src/stepper.c
+    # Standard single-loop positional PID controller (reusable, no external deps)
+    Core/Src/pid.c
+    # Basic Kalman filter observer (2D CV model: encoder + ranger fusion)
+    Core/Src/kalman.c
     # OLED (SSD1306) driver
     Middleware/OLED/ssd1306.c
     Middleware/OLED/ssd1306_fonts.c
