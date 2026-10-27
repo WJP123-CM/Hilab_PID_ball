@@ -1,22 +1,23 @@
 /**
  ******************************************************************************
  * @file    stepper.h
- * @brief   步进电机基础驱动（D36A 驱动板 + MS42CG 电机，开环脉冲控制）
+ * @brief   步进电机驱动（D36A 驱动板 + MS42CG 电机，带符号频率控制）
  *
  * 硬件接线（CubeMX 已配置）：
- *   - STEP 脉冲：PA3 = TIM2_CH4（PSC=71 → 计数时钟 1MHz，Period 由 CubeMX 决定）
+ *   - STEP 脉冲：PA3 = TIM2_CH4（PSC=71 → 计数时钟 1MHz，Period 仅作上电初值）
  *   - DIR  方向：PA2（Motor_direction_Pin，推挽输出）
  *   - EN   使能：PA1（Motor_enabled_Pin，推挽输出，D36A 高电平使能）
  *
  * D36A 控制时序（参考 WHEELTEC 官方 C8T6+D36A+MS42 例程）：
  *   - EN：高电平使能，低电平休眠（上电默认休眠，安全）
  *   - DIR：电平保持定向；切换方向后须 ≥1ms 再发 STEP 脉冲
+ *          （本模块换向拍只切 DIR 不发脉冲，由 StepperSm 决策保证）
  *   - STEP：每个上升沿走一个细分步；D36A 出厂 16 细分，
  *           200 步/圈 × 16 = 3200 脉冲/圈（细分改变时须同步修改宏）
  *
- * 脉冲频率由 CubeMX 中 TIM2 的 Prescaler/Period 决定（本工程约定不在代码中
- * 覆盖 CubeMX 参数），当前配置 PSC=71 / Period=999 → 1.00kHz，
- * 对应转速 = 1000×60/3200 = 18.75 rpm；调速须在 CubeMX 改 Period 后重新生成。
+ * 控制模型：Stepper_SetTargetFreq() 带符号目标频率（正=正转/负=反转/0=停），
+ * 内部完成限幅、斜率限制、安全换向。核心决策 StepperSm_Update 为纯软件逻辑
+ * （无硬件依赖），main.c 上电自检直接覆盖；频率换算：1kHz ≈ 18.75rpm
  ******************************************************************************
  */
 #ifndef __STEPPER_H__
@@ -36,35 +37,78 @@ extern "C" {
 /* D36A 出厂 16 细分：200 步/圈 × 16 = 3200 STEP 脉冲/圈；改 DIP 细分须同步改 */
 #define STEPPER_PULSES_PER_REV 3200u
 
-/* 方向电平定义（与官方例程一致：DIR=1 电机正转/顺时针；若整机方向相反，
- * 只需对调下面两个宏，不必改驱动逻辑） */
-#define STEPPER_DIR_CW	1u /* 正转电平 */
-#define STEPPER_DIR_CCW 0u /* 反转电平 */
+/* 编码器：MS42CG 标配 1000 线（按实物铭牌改），TIM3 TI12 模式 4 倍频
+ * → 4000 计数/圈；与步进脉冲换算：1 STEP 脉冲 = 4000/3200 = 1.25 计数 */
+#define STEPPER_ENC_PPR 1000u
+#define STEPPER_ENC_CPR (STEPPER_ENC_PPR * 4u)
+
+/* 频率限幅（Hz）：|freq| < MIN 视为停止（脉冲过疏只会引起抖动）；
+ * MAX 按电机矩频特性约束（1kHz≈18.75rpm，2kHz≈37.5rpm） */
+#define STEPPER_FREQ_MIN_HZ 30
+#define STEPPER_FREQ_MAX_HZ 2000
+
+/* 斜率限制：每拍频率变化量上限（Hz/拍）。50Hz 调用下 100Hz/拍 = 5kHz/s²，
+ * 频率平滑渐变是防失步的核心——步进电机对频率阶跃敏感 */
+#define STEPPER_SLEW_HZ_PER_STEP 100
+
+/* 方向电平定义（2026-10-27 实测：D36A DIR=1 时电机转向与编码器递增方向相反，
+ * 位置环正反馈跑飞——故对调两宏使"正转(CW)=编码器递增"闭环约定成立；
+ * 若更换驱动板/接线后方向再反，对调这两个宏即可） */
+#define STEPPER_DIR_CW	0u /* 正转电平 */
+#define STEPPER_DIR_CCW 1u /* 反转电平 */
 
 /* TIM2 计数时钟分频校验值：PSC=71 → 1MHz（须与 CubeMX 中 TIM2.Prescaler 一致） */
 #define STEPPER_TIM_PSC 71u
 
-/* ============================ 接口 ======================================== */
+/* ==================== 核心决策状态机（纯软件，无硬件依赖） ================ */
 
-/* 初始化：校验 TIM2 分频配置、设定 STEP 占空比（约 50%）；
- * 不启动脉冲、不使能电机（上电安全态，须显式调用 SetEnabled+Start 才会转动） */
+typedef struct {
+	int32_t cur_freq; /* 当前实际输出的带符号频率（Hz），0 = 脉冲停止 */
+	bool	dir_cw;	  /* 当前 DIR 电平（true = 正转方向） */
+} StepperSm_t;
+
+typedef struct {
+	int32_t out_freq;	 /* 本拍应输出的带符号频率（Hz） */
+	bool	dir_cw;		 /* 本拍 DIR 电平 */
+	bool	pulse_en;	 /* 本拍是否输出脉冲 */
+	bool	dir_changed; /* 本拍发生换向（只建立 DIR 电平不发脉冲，
+						  * 满足 D36A "换向后 ≥1ms 再发脉冲"时序） */
+} StepperCmd_t;
+
+/* 状态初始化（上电安全态：输出 0，方向默认正转） */
+void StepperSm_Init(StepperSm_t *sm);
+
+/* 核心决策：带符号目标频率 → 本拍输出决策。
+ * 处理顺序：限幅(±MAX) → 死区(|f|<MIN 视为 0) → 斜率限制(每拍 ≤SLEW) →
+ * 换向安全（方向不同时本拍输出 0、只切 DIR、dir_changed=true）。
+ * 以固定周期调用（本工程 50Hz），斜率以"每拍最大变化量"表达 */
+StepperCmd_t StepperSm_Update(StepperSm_t *sm, int32_t target_hz);
+
+/* ============================ 驱动接口 ==================================== */
+
+/* 初始化：校验 TIM2 分频配置、设定 STEP 占空比（约 50%）、启动编码器接口；
+ * 不启动脉冲、不使能电机（上电安全态） */
 void Stepper_Init(void);
 
 /* 使能/休眠驱动板（高电平使能）；休眠时绕组断电，电机可手转 */
 void Stepper_SetEnabled(bool enable);
 
-/* 设置方向电平（cw=true 正转）；
- * 注意：若电机正在转（Start 状态），改向后须等待 ≥1ms 时序，由调用方保证 */
-void Stepper_SetDirection(bool cw);
+/* 设定带符号目标频率（Hz），以固定周期调用（本工程 50Hz）：
+ *   freq_hz > 0 → 正转；freq_hz < 0 → 反转；freq_hz = 0 → 停止脉冲
+ * 脉冲启停、方向切换、ARR 更新均由本函数按 StepperSm 决策自动完成 */
+void Stepper_SetTargetFreq(int32_t freq_hz);
 
-/* 启动 STEP 脉冲输出（开始连续转动）；未使能时仅启动脉冲、电机不动 */
-void Stepper_Start(void);
+/* 当前实际输出的带符号脉冲频率（Hz，0 = 停止）——经斜率限制后的真实输出，
+ * 加减速/换向过程中与目标值不同，供显示与闭环观测 */
+int32_t Stepper_GetPulseFreqHz(void);
 
-/* 停止 STEP 脉冲输出（停止转动，绕组保持锁定） */
-void Stepper_Stop(void);
+/* 读取编码器累计位置（TIM3，32 位累计计数，内部已处理 16 位 CNT 回绕）；
+ * 须在 Stepper_Init 后调用。方向约定：正转(CW)计数递增；
+ * 若实测相反（闭环发散即为此现象），对调编码器 A/B 相接线或对调 DIR 宏 */
+int32_t Stepper_ReadEncoder(void);
 
-/* 当前脉冲频率（Hz）= 1MHz / (Period+1)，由 CubeMX 配置决定，仅供显示/换算 */
-uint32_t Stepper_GetPulseFreqHz(void);
+/* 编码器累计位置清零：当前时刻为新的 0 点（对位基准/测试归零用） */
+void Stepper_EncoderZero(void);
 
 #ifdef __cplusplus
 }

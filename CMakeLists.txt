@@ -50,7 +50,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/print.c
     # OLED application layer (home page / printf print / progress bar)
     Core/Src/oled.c
-    # Stepper motor basic driver (D36A: EN/DIR GPIO + TIM2_CH4 STEP pulse)
+    # Stepper motor driver (D36A: EN/DIR GPIO + TIM2_CH4 STEP pulse, signed-freq control)
     Core/Src/stepper.c
     # Standard single-loop positional PID controller (reusable, no external deps)
     Core/Src/pid.c
