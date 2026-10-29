@@ -277,6 +277,8 @@ bool Stepper_StoreSave(void) {
 	FLASH_EraseInitTypeDef ei = {0};
 	uint32_t			  page_err = 0u;
 	const uint32_t		 *p;
+	uint32_t			  addr;
+	uint8_t				  i;
 	HAL_StatusTypeDef	  ok;
 
 	d.magic	  = STEPPER_ENC_STORE_MAGIC;
@@ -290,8 +292,12 @@ bool Stepper_StoreSave(void) {
 	ei.NbPages	   = 1u;
 	ok			   = HAL_FLASHEx_Erase(&ei, &page_err);
 	if (ok == HAL_OK) {
-		for (p = (const uint32_t *) &d; p < (const uint32_t *) (&d + 1); p++) {
-			ok = HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, (uint32_t) p, *p);
+		/* 目标地址必须是 Flash（STEPPER_ENC_STORE_ADDR），源数据在栈上；
+		 * 早期版本把栈地址当编程地址传入，导致擦除后写入静默丢失 */
+		p	 = (const uint32_t *) &d;
+		for (i = 0u; i < (sizeof(EncStore_t) / 4u); i++) {
+			addr = STEPPER_ENC_STORE_ADDR + (4u * i);
+			ok	 = HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, addr, p[i]);
 			if (ok != HAL_OK) {
 				break;
 			}
