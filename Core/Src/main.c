@@ -20,7 +20,6 @@
 #include "main.h"
 #include "i2c.h"
 #include "iwdg.h"
-#include "rtc.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -56,7 +55,7 @@
 
 /* 平台保持（摆杆初始角度锁定）：H1 以当前编码器位置为零点并保持；
  * 默认上电不使能，避免首次上电时电机突然动作。H0 关闭并释放电机。 */
-#define PLATFORM_HOLD_ON_BOOT 0		 /* 0 = 不使能，1 = 使能 */
+#define PLATFORM_HOLD_ON_BOOT 1		 /* 0 = 不使能，1 = 使能 */
 #define HOLD_PID_KP		   2.0f	  /* Hz / 编码器计数 */
 #define HOLD_PID_KI		   0.05f
 #define HOLD_PID_KD		   0.0f
@@ -84,6 +83,23 @@
  * 与 TOF_POS_SIGN，再同步取反本宏（不可只改一个）。 */
 #define BALL_PID_SIGN		 (+1)
 #define BALL_LOSS_MAX_FRAMES 10u /* ToF 连续无效 0.5s → 外环回中（防失联跑飞） */
+
+/* ---- 按键 PA0（CubeMX 已配输入+内部下拉，按下 = 高电平）----
+ * 采样在 TIM1 1ms 节拍回调内完成：只读 IDR 和几个计数器，O(1) 不阻塞。
+ * 消抖：电平需连续 KEY_DEBOUNCE_MS(15ms) 保持不变才确认新稳态；
+ * 事件经小队列交付主循环（ISR 单生产者 / 主循环单消费者），无锁。 */
+#define KEY_DEBOUNCE_MS	  15u	 /* 10~20ms 区间取中值 */
+#define KEY_LONG_MS		  1000u /* 按住满 1s 判定长按 */
+#define KEY_QUEUE_LEN	  4u
+
+typedef enum {
+	KEY_EVT_NONE = 0,
+	KEY_EVT_PRESS,   /* 确认按下（高电平稳态建立） */
+	KEY_EVT_RELEASE, /* 确认松开 */
+	KEY_EVT_CLICK,   /* 单击：按下后未达长按阈值即松开 */
+	KEY_EVT_LONG,	 /* 长按：按住达到 KEY_LONG_MS（每次按压仅一次） */
+	KEY_EVT_CNT		 /* 事件种类计数（数组长度用） */
+} KeyEvent_t;
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -123,6 +139,18 @@ static PID_t			s_ball_pid;					/* 外环：小球位置环（ToF pos → 计数�
 static volatile uint8_t s_ctrl_mode	   = 0;
 static volatile int16_t s_ball_ofs_cnt   = 0;		/* 外环输出：内环目标偏移（计数） */
 static volatile uint8_t s_tof_lost_n	   = 0;		/* 外环连续无效帧计数 */
+
+/* ---- 按键状态机（TIM1 ISR 写；队列由主循环读） ---- */
+static volatile uint8_t  s_key_q[KEY_QUEUE_LEN];
+static volatile uint8_t  s_key_q_head	  = 0;	/* ISR 写 */
+static volatile uint8_t  s_key_q_tail	  = 0;	/* 主循环写 */
+static uint8_t  s_key_stable			  = 0;	/* 已确认电平：1=按下 */
+static uint8_t  s_key_diff_cnt			  = 0;	/* 与稳态相反的连续采样数 */
+static uint16_t s_key_hold_ms			  = 0;	/* 稳态按下持续时长 */
+static uint8_t  s_key_long_sent			  = 0;	/* 本次按压已上报长按 */
+/* 验证用统计（主循环消费事件时累加，可经调试器读取核对） */
+static volatile uint8_t s_key_evt_cnt[KEY_EVT_CNT];
+static volatile uint8_t s_key_last_evt;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -137,6 +165,8 @@ static void BallOuter_Tick(void);
 static void InnerLoop_Tick(void);
 static void Enc_Service(void);
 static void OLED_Refresh(void);
+static void Key_Tick1ms(void);
+static KeyEvent_t Key_PollEvent(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -173,7 +203,6 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_RTC_Init();
   MX_I2C1_Init();
   MX_TIM2_Init();
   MX_USART1_UART_Init();
@@ -273,6 +302,17 @@ int main(void)
 			Enc_Service();
 			OLED_Refresh();
 		}
+
+		/* 按键事件消费（非阻塞）：本阶段只累加统计供验证，后续可在此
+		 * 把 KEY_EVT_CLICK / KEY_EVT_LONG 映射到具体控制动作 */
+		{
+			KeyEvent_t ke;
+
+			while ((ke = Key_PollEvent()) != KEY_EVT_NONE) {
+				s_key_last_evt = (uint8_t) ke;
+				s_key_evt_cnt[ke]++;
+			}
+		}
 	}
   /* USER CODE END 3 */
 }
@@ -285,7 +325,6 @@ void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
-  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
@@ -313,12 +352,6 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_RTC;
-  PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
-  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
     Error_Handler();
   }
@@ -626,6 +659,67 @@ static void OLED_Refresh(void) {
 	ssd1306_UpdateRect(0, 16, SSD1306_WIDTH, 48);
 }
 
+/* ===================== 按键 PA0：1ms 采样 + 15ms 消抖 ==================== */
+/* 入队（仅 ISR 调用）：队满时丢弃最新事件，保证已入队事件不被覆盖 */
+static void Key_QueuePush(uint8_t evt) {
+	uint8_t next = (uint8_t) ((s_key_q_head + 1u) % KEY_QUEUE_LEN);
+
+	if (next != s_key_q_tail) {
+		s_key_q[s_key_q_head] = evt;
+		s_key_q_head		  = next;
+	}
+}
+
+/* 1ms 节拍采样：全程只做电平计数与入队，不含延时/循环等待 */
+static void Key_Tick1ms(void) {
+	uint8_t raw = (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0) == GPIO_PIN_SET) ? 1u : 0u;
+
+	if (raw != s_key_stable) {
+		/* 抖动中：未连续稳定 KEY_DEBOUNCE_MS 不认账，直接返回 */
+		if (++s_key_diff_cnt < KEY_DEBOUNCE_MS) {
+			return;
+		}
+		s_key_diff_cnt = 0;
+		s_key_stable   = raw;
+
+		if (raw != 0u) { /* 确认按下：清时长，每次按压只发一次 PRESS */
+			s_key_hold_ms	= 0u;
+			s_key_long_sent = 0u;
+			Key_QueuePush(KEY_EVT_PRESS);
+		} else { /* 确认松开：先判是否已达长按，再决定是否补发单击 */
+			uint8_t was_long = s_key_long_sent;
+
+			s_key_hold_ms = 0u;
+			Key_QueuePush(KEY_EVT_RELEASE);
+			if (was_long == 0u) {
+				Key_QueuePush(KEY_EVT_CLICK);
+			}
+		}
+		return;
+	}
+
+	s_key_diff_cnt = 0;
+	if ((s_key_stable != 0u) && (s_key_long_sent == 0u)) {
+		if (++s_key_hold_ms >= KEY_LONG_MS) {
+			s_key_long_sent = 1u; /* 长按只上报一次，持续按住不重复触发 */
+			Key_QueuePush(KEY_EVT_LONG);
+		}
+	}
+}
+
+/* 主循环取事件（非阻塞）：无事件立即返回 KEY_EVT_NONE */
+static KeyEvent_t Key_PollEvent(void) {
+	uint8_t tail = s_key_q_tail;
+	uint8_t evt;
+
+	if (tail == s_key_q_head) {
+		return KEY_EVT_NONE;
+	}
+	evt			 = s_key_q[tail];
+	s_key_q_tail = (uint8_t) ((tail + 1u) % KEY_QUEUE_LEN);
+	return (KeyEvent_t) evt;
+}
+
 /* ===================== TIM1 1ms 节拍 ===================================== */
 /* 控制放 ISR 保证 50Hz；测距/滤波/VOFA/命令/OLED 放主循环，避免阻塞控制 */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
@@ -651,6 +745,9 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 	if ((tick_ms % OLED_PERIOD_MS) == 0) {
 		s_oled_tick = 1;
 	}
+
+	/* 按键 1ms 采样：只读引脚与计数，耗时常数级，不影响 50Hz 控制 */
+	Key_Tick1ms();
 
 	/* 主循环心跳正常才喂狗：主循环卡死超过 1 个周期即触发 IWDG 复位 */
 	if (tick_ms == 0) {
