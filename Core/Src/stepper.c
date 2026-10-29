@@ -73,7 +73,7 @@ StepperCmd_t StepperSm_Update(StepperSm_t *sm, int32_t target_hz) {
 static int32_t		s_enc_total = 0;	 /* 32 位累计计数 */
 static uint16_t		s_enc_last	= 0u;	 /* 上一次读取的 CNT 原始值 */
 static bool			s_running	= false; /* STEP 脉冲输出状态（内部启停幂等） */
-static StepperSm_t	s_sm;				 /* 速度控制状态机（决策见 stepper_logic.c） */
+static StepperSm_t	s_sm;				 /* 速度控制状态机（决策见 StepperSm_Update） */
 
 void Stepper_Init(void) {
 	/* 校验 CubeMX 配置的 TIM2 分频与 1MHz 计数假设一致（重新生成时须保持）：
@@ -146,10 +146,11 @@ void Stepper_SetTargetFreq(int32_t freq_hz) {
 
 	if (cmd.dir_changed) {
 		/* 换向拍：只建立 DIR 电平不发脉冲（D36A 要求换向后 ≥1ms 再发脉冲，
-		 * 50Hz 调用间隔 20ms 天然满足；下一拍从 0 斜升） */
+		 * 50Hz 调用间隔 20ms 天然满足；下一拍从 0 斜升）。
+		 * 方向电平由 STEPPER_DIR_CW/CCW 宏决定，改宏会真正生效。 */
 		PwmStop();
 		HAL_GPIO_WritePin(Motor_direction_GPIO_Port, Motor_direction_Pin,
-						  cmd.dir_cw ? GPIO_PIN_SET : GPIO_PIN_RESET);
+						  (cmd.dir_cw ? STEPPER_DIR_CW : STEPPER_DIR_CCW) ? GPIO_PIN_SET : GPIO_PIN_RESET);
 		return;
 	}
 
@@ -174,4 +175,48 @@ int32_t Stepper_ReadEncoder(void) {
 	s_enc_total += (int16_t) (now - s_enc_last);
 	s_enc_last	= now;
 	return s_enc_total;
+}
+
+/* ==================== 编码器速度滤波（实现见 stepper.h 噪声模型注释） ===== */
+
+void StepperSpdFilt_Init(StepperSpdFilt_t *f, uint8_t n, float alpha) {
+	if (n < 1u) {
+		n = 1u;
+	}
+	if (n > STEPPER_SPDF_NMAX) {
+		n = STEPPER_SPDF_NMAX;
+	}
+	if ((alpha <= 0.0f) || (alpha > 1.0f)) {
+		alpha = 1.0f; /* 越界一律直通，防滤波器发散 */
+	}
+	f->n	 = n;
+	f->alpha = alpha;
+	StepperSpdFilt_Reset(f);
+}
+
+void StepperSpdFilt_Reset(StepperSpdFilt_t *f) {
+	for (uint8_t i = 0; i < STEPPER_SPDF_NMAX; i++) {
+		f->pos[i] = 0;
+	}
+	f->idx		= 0;
+	f->filled	= 0;
+	f->lpf		= 0.0f;
+}
+
+int32_t StepperSpdFilt_Update(StepperSpdFilt_t *f, int32_t enc_pos) {
+	int32_t oldest = f->pos[f->idx]; /* 先取最老样本再覆盖（N=1 时即上一拍位置） */
+	f->pos[f->idx] = enc_pos;
+	f->idx = (uint8_t) ((f->idx + 1u) % f->n);
+	if (f->filled < f->n) {
+		f->filled++;
+	}
+	if (f->filled < f->n) {
+		return 0; /* 未满窗：与上电静止段语义一致 */
+	}
+	return (enc_pos - oldest) * STEPPER_SPDF_SCALE / (int32_t) f->n;
+}
+
+float StepperSpdFilt_UpdateLpf(StepperSpdFilt_t *f, float raw_hz) {
+	f->lpf += f->alpha * (raw_hz - f->lpf);
+	return f->lpf;
 }

@@ -51,11 +51,14 @@ extern "C" {
  * 频率平滑渐变是防失步的核心——步进电机对频率阶跃敏感 */
 #define STEPPER_SLEW_HZ_PER_STEP 100
 
-/* 方向电平定义（2026-10-27 实测：D36A DIR=1 时电机转向与编码器递增方向相反，
- * 位置环正反馈跑飞——故对调两宏使"正转(CW)=编码器递增"闭环约定成立；
- * 若更换驱动板/接线后方向再反，对调这两个宏即可） */
-#define STEPPER_DIR_CW	0u /* 正转电平 */
-#define STEPPER_DIR_CCW 1u /* 反转电平 */
+/* 方向电平定义：CW/CCW 到 PA2 的实际电平。
+ * 历史记录（2026-10-27）：多次对调后仍出现“固件未动、方向再次反转”的间歇现象，
+ * 已怀疑 PA2 浮空 / 编码器 A/B 松动 / 电机相线接触不良，接线根因尚未闭环。
+ * 当前工作区设置为 CW=1；H1 使能平台保持前必须先做小频率方向验证：
+ * 若单向跑飞，先 H0，再查接线；不要只凭注释反复对调。
+ * 注意：stepper.c 现在真正引用这两个宏，改值会改变 DIR 电平。 */
+#define STEPPER_DIR_CW	1u /* 正转电平 */
+#define STEPPER_DIR_CCW 0u /* 反转电平 */
 
 /* TIM2 计数时钟分频校验值：PSC=71 → 1MHz（须与 CubeMX 中 TIM2.Prescaler 一致） */
 #define STEPPER_TIM_PSC 71u
@@ -109,6 +112,37 @@ int32_t Stepper_ReadEncoder(void);
 
 /* 编码器累计位置清零：当前时刻为新的 0 点（对位基准/测试归零用） */
 void Stepper_EncoderZero(void);
+
+/* ==================== 编码器速度滤波（N 拍块差分 + 一阶低通对照） ========
+ * 噪声模型（2026-10-27 开环定频采集实测）：低速段量化噪声主导（20ms 差分
+ * 分辨率 ±40Hz 等效频率）；中高速段为真实转速纹波（开环步进力矩纹波，
+ * std ≈ 7%×转速，正比于速度）。静止时数据精确为 0，无 EMI 幻计数。
+ * 块差分：速度=(pos[n]−pos[n−N])×SCALE/N —— 量化噪声 ÷N、恒速零畸变、
+ * 群延迟 (N−1)/2 拍（N=4 → 30ms）；一阶低通：y+=α(x−y)，延迟 ≈(1−α)/α 拍 */
+#define STEPPER_SPDF_NMAX	8u
+#define STEPPER_SPDF_SCALE	40 /* 计数差 → 等效脉冲Hz（50Hz 采样 × 3200/4000），
+								* 须与 main.c 的 SPD_FB_SCALE 保持一致 */
+
+typedef struct {
+	int32_t pos[STEPPER_SPDF_NMAX]; /* 位置历史环形缓冲 */
+	uint8_t n;		/* 有效窗口 N（1..NMAX） */
+	uint8_t idx;	/* 最老样本下标 */
+	uint8_t filled; /* 已填充样本数（未满窗返回 0） */
+	float	lpf;	/* 一阶低通状态（等效Hz） */
+	float	alpha;	/* 低通系数 (0,1] */
+} StepperSpdFilt_t;
+
+/* 初始化：n=窗口拍数（1=退化为原始差分），alpha=低通系数 */
+void StepperSpdFilt_Init(StepperSpdFilt_t *f, uint8_t n, float alpha);
+
+/* 每拍（20ms）喂入累计位置，返回 N 拍块差分速度（等效脉冲Hz，带符号） */
+int32_t StepperSpdFilt_Update(StepperSpdFilt_t *f, int32_t enc_pos);
+
+/* 每拍喂入原始速度（Hz），更新并返回一阶低通输出 */
+float StepperSpdFilt_UpdateLpf(StepperSpdFilt_t *f, float raw_hz);
+
+/* 复位：历史窗口与低通状态清零（对位归零/换段时用） */
+void StepperSpdFilt_Reset(StepperSpdFilt_t *f);
 
 #ifdef __cplusplus
 }

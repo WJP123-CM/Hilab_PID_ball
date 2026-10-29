@@ -19,6 +19,11 @@
  *          无观测（测距 status!=0 等）时跳过 update 只 predict，协方差自然增长，
  *          观测恢复后增益自动回升重新收敛。
  *
+ *          数值硬化（2026-10-29）：更新后强制协方差对称平均+对角非负钳位
+ *          （简单形式 (I-KH)P 非 Joseph，舍入下不保证对称正定）；
+ *          速度限幅 vel_max 抑制尖峰对速度态的污染；
+ *          KF_UpdatePosGated 提供新息门控（孤立尖峰剔除，连续越限自动放行）。
+ *
  *          ===================== 接入示例（本工程 main.c）=====================
  *          static KF_t s_kf;
  *          // 初始化（上电一次）：dt=20ms 控制周期
@@ -54,6 +59,9 @@ extern "C" {
 /** 默认发散保护阈值：协方差对角线超过该值判定发散，自动复位保护 */
 #define KF_DEFAULT_MAX_COV 1.0e9f
 
+/** 默认速度限幅（位置单位/s）：按被测对象物理速度上限设，抑制尖峰污染速度态 */
+#define KF_DEFAULT_VEL_MAX 1000.0f
+
 /**
  * @brief  卡尔曼滤波器实例（2 维 CV 模型）
  *         参数字段可经 KF_Set* 接口在线修改；运行态字段由模块内部维护，
@@ -65,6 +73,7 @@ typedef struct {
 	float	q_pos;		/* 过程噪声-位置项(mm^2)：越大跟踪越快、越不平滑 */
 	float	q_vel;		/* 过程噪声-速度项(mm^2/s^2)：速度突变跟踪能力 */
 	float	max_cov;	/* 发散保护阈值（协方差上限），默认 KF_DEFAULT_MAX_COV */
+	float	vel_max;	/* 速度限幅（位置单位/s），默认 KF_DEFAULT_VEL_MAX */
 
 	/* ---- 状态估计（输出） ---- */
 	float	pos;		/* 位置估计 */
@@ -76,6 +85,8 @@ typedef struct {
 
 	/* ---- 诊断 ---- */
 	uint16_t diverge_cnt;	/* 发散保护复位次数（观测用，正常应恒为 0） */
+	uint16_t outlier_cnt;	/* 门控拒绝次数（仅 KF_UpdatePosGated 累计） */
+	uint8_t	 gate_streak;	/* 门控连续越限计数（内部用，达放行拍数后清零） */
 } KF_t;
 
 /**
@@ -100,6 +111,9 @@ void KF_SetProcessNoise(KF_t *kf, float q_pos, float q_vel);
 /** @brief 在线修改发散保护阈值（>0，非法值忽略） */
 void KF_SetMaxCov(KF_t *kf, float max_cov);
 
+/** @brief 在线修改速度限幅（>0，非法值忽略） */
+void KF_SetVelLimit(KF_t *kf, float vel_max);
+
 /** @brief 复位状态估计与协方差（切换工况时建议调用；配置参数保留） */
 void KF_Reset(KF_t *kf, float pos, float vel, float cov);
 
@@ -118,6 +132,17 @@ int KF_Predict(KF_t *kf);
  * @note   测距无效帧（status!=0）不要调用本函数，直接跳过即可
  */
 int KF_UpdatePos(KF_t *kf, float z, float r);
+
+/**
+ * @brief  位置观测更新 + 新息门控（孤立尖峰抑制）
+ * @param  z      : 位置观测值
+ * @param  r      : 观测噪声方差
+ * @param  gate_n : 门限倍数，innov² > gate_n²·S 判定为离群（典型 3.0）
+ * @retval 1 已融合；0 输入非法；2 被门控拒绝（已计 outlier_cnt）
+ * @note   连续 KF_GATE_RELEASE_N 拍越限自动放行（真实台阶不被锁死）；
+ *         已经中值等前置剔除尖峰的链路直接用 KF_UpdatePos 即可
+ */
+int KF_UpdatePosGated(KF_t *kf, float z, float r, float gate_n);
 
 /**
  * @brief  速度观测更新（H=[0,1]，预留扩展：编码器差分速度等）

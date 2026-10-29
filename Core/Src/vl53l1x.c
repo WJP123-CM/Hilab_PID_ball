@@ -7,6 +7,7 @@
 #include "vl53l1x.h"
 
 #include "i2c.h"  /* hi2c1 */
+#include "iwdg.h" /* hiwdg：初始化各步骤之间喂狗，避免累计阻塞触发 IWDG */
 #include "main.h" /* HAL_Delay、GPIO_InitTypeDef 等 */
 #include "vl53l1_api.h"
 #include "vl53l1_platform_stm32.h"
@@ -22,6 +23,7 @@ static const char  *s_last_step = "OK"; /* 最近一次失败的步骤名 */
 #define VL53_INIT_STEP(expr, step_name) \
 	do {                                \
 		VL53L1_Error _st = (expr);      \
+		HAL_IWDG_Refresh(&hiwdg);       \
 		if (_st != VL53L1_ERROR_NONE) { \
 			s_last_step = (step_name);  \
 			return _st;                 \
