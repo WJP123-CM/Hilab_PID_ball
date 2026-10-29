@@ -151,6 +151,8 @@ static uint8_t  s_key_long_sent			  = 0;	/* 本次按压已上报长按 */
 /* 验证用统计（主循环消费事件时累加，可经调试器读取核对） */
 static volatile uint8_t s_key_evt_cnt[KEY_EVT_CNT];
 static volatile uint8_t s_key_last_evt;
+/* 急停锁存：1 = 已按 PA0 使电机休眠，松手不自动恢复 */
+static volatile uint8_t s_key_estop = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -303,14 +305,25 @@ int main(void)
 			OLED_Refresh();
 		}
 
-		/* 按键事件消费（非阻塞）：本阶段只累加统计供验证，后续可在此
-		 * 把 KEY_EVT_CLICK / KEY_EVT_LONG 映射到具体控制动作 */
+		/* 按键事件消费（非阻塞）：
+		 * PRESS → 电机急停并锁存（停控制 + 休眠 + 位置落盘），松手不恢复；
+		 * 再按一次解除锁存并恢复驱动器使能（仍为模式 0，需 H1/B1 启动） */
 		{
 			KeyEvent_t ke;
 
 			while ((ke = Key_PollEvent()) != KEY_EVT_NONE) {
 				s_key_last_evt = (uint8_t) ke;
 				s_key_evt_cnt[ke]++;
+
+				if (ke == KEY_EVT_PRESS) {
+					if (s_key_estop == 0u) {
+						s_key_estop = 1u;
+						Loop_SetMode(0);
+					} else {
+						s_key_estop = 0u;
+						Stepper_SetEnabled(true); /* 恢复力矩，杆锁在当前角度 */
+					}
+				}
 			}
 		}
 	}
@@ -565,6 +578,7 @@ static void Loop_SetMode(uint8_t mode) {
 		Stepper_SetEnabled(false);
 		return;
 	}
+	s_key_estop = 0; /* H1/B1 属显式启动，视为解除按键急停锁存 */
 	Stepper_EncoderZero(); /* 以当前摆杆角度为内环零点 */
 	PID_Reset(&s_hold_pid);
 	PID_Reset(&s_ball_pid);
@@ -653,7 +667,8 @@ static void OLED_Refresh(void) {
 	OLED_Print(0, 24, "FLT:%4d mm", (int) s_filt_mm);
 	OLED_Print(0, 32, "POS:%c%ld.%ld cm", sign, (long) (abs_pos / 10), (long) (abs_pos % 10));
 	OLED_Print(0, 40, "ST:%d A:%d", (int) s_range_st, (int) TofFilter_GetAlphaMilli(&s_filter));
-	OLED_Print(0, 48, "V:%3lu%% M:%d S:%d", (unsigned long) s_valid_pct, (int) s_ctrl_mode, (int) s_seg_id);
+	OLED_Print(0, 48, "V:%3lu%% M:%c S:%d", (unsigned long) s_valid_pct,
+			   (s_key_estop != 0u) ? 'E' : (char) ('0' + s_ctrl_mode), (int) s_seg_id);
 	OLED_Print(0, 56, "ENC:%6ld Z:%lu", (long) Stepper_ReadEncoderAbs(),
 			   (unsigned long) Stepper_GetZCount());
 	ssd1306_UpdateRect(0, 16, SSD1306_WIDTH, 48);
