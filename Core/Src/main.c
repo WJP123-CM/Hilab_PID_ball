@@ -74,23 +74,6 @@
 #define HOLD_PID_ILIM	   50.0f  /* 积分限幅（Hz） */
 #define HOLD_OUT_LIMIT	   400.0f /* 输出限幅（Hz） */
 #define HOLD_DEADBAND_CNT  3.0f	  /* 误差死区（计数） */
-
-/* 小球位置闭环（外环，20Hz 与 ToF 同拍）：反馈 = EMA 滤波后的 pos_cm_x10
- * （相对 Z 命令标定的零点，0 = 管中心 O 点），输出 = 内环角度目标偏移
- * （编码器计数），由内环（50Hz 编码器位置环）跟踪。卡尔曼接入前反馈固定
- * 走 TofFilter（中值-5 + EMA），后续只换反馈源，环结构不变。
- * 默认值均为保守起步值，须按阶跃响应在线整定（P/I/D 命令，千分比）。 */
-#define BALL_PID_KP			 2.0f  /* 计数 / 0.1cm：1cm 偏差 → 20 计数 ≈ 1.8° */
-#define BALL_PID_KI			 0.05f  /* 消静差；杆存在倾角-重力静差时必需 */
-#define BALL_PID_KD			 0.0f  /* ToF 群延迟大（中值2帧+EMA），起步不用 D */
-#define BALL_PID_ILIM		 100.0f /* 积分限幅（计数） */
-#define BALL_PID_OUT_LIM	 400.0f /* 外环输出限幅（计数，≈36°）防目标角度翻车 */
-#define BALL_PID_DEADBAND_X10 3.0f  /* 死区 ±0.3cm（≈1.6σ，σ=1.87mm 实测） */
-/* 环路符号：+1 表示"PID 输出正偏移 → pos 减小"。符号错则正反馈跑飞：
- * 判定实验——B1 后把球手动偏到 +2cm 松手，若杆动作使 pos 继续增大，
- * 立即 B0 并把本宏改 -1。TOF_POS_SIGN 改动后本宏同样要跟着取反。 */
-#define BALL_PID_SIGN		 (+1)
-#define BALL_LOSS_MAX_FRAMES 10u /* ToF 连续无效 0.5s → 外环回中（防失联跑飞） */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -130,13 +113,10 @@ static volatile uint8_t s_cmd_tick	= 0;
 static volatile uint8_t s_oled_tick = 0;
 static volatile uint8_t s_loop_alive = 0; /* 主循环心跳：ISR 每秒检查一次 */
 
-/* ---- 控制模式：0=释放 1=平台保持（内环目标0） 2=小球闭环（外环→内环目标） ----
- * s_ctrl_mode/s_ball_ofs_cnt 由主循环写、TIM1 ISR 读，须 volatile */
-static PID_t			s_hold_pid;					/* 内环：编码器位置环 */
-static PID_t			s_ball_pid;					/* 外环：小球位置环（ToF pos → 计数偏移） */
+/* ---- 平台保持：0=释放 1=保持（编码器位置环锁定摆杆于 H 命令时刻角度） ----
+ * s_ctrl_mode 由主循环写、TIM1 ISR 读，须 volatile */
+static PID_t			s_hold_pid;					/* 编码器位置环 */
 static volatile uint8_t s_ctrl_mode	   = 0;
-static volatile int16_t s_ball_ofs_cnt   = 0;		/* 外环输出：内环目标偏移（计数） */
-static volatile uint8_t s_tof_lost_n	   = 0;		/* 外环连续无效帧计数 */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -147,7 +127,6 @@ static void TofCmd_Poll(void);
 static void TofCmd_ParseLine(const char *line);
 static void Loop_Init(void);
 static void Loop_SetMode(uint8_t mode);
-static void BallOuter_Tick(void);
 static void InnerLoop_Tick(void);
 static void OLED_Refresh(void);
 /* USER CODE END PFP */
@@ -247,7 +226,7 @@ int main(void)
 #endif
 	HAL_IWDG_Refresh(&hiwdg);
 
-	/* 接收上位机命令（A/Z/S/H/B/P/I/D/R）；VOFA 数据流仍只含数值，不混入文本 */
+	/* 接收上位机命令（A/Z/S/H/R）；VOFA 数据流仍只含数值，不混入文本 */
 	USART1_StartRx();
 
 	/* SysTick 优先级=1（须高于 TIM1=2）：ISR 内 HAL_GetTick() 走时，
@@ -405,15 +384,10 @@ static void Tof_Process(void) {
 		s_win_valid = 0;
 	}
 
-	/* 外环与滤波同拍（20Hz）：pos 更新后立刻推进外环，避免 50Hz 重复吃旧数据 */
-	BallOuter_Tick();
-
 	/* VOFA FireWater：ch0=raw_mm, ch1=filt_mm, ch2=pos_cm_x10,
-	 * ch3=status, ch4=valid_cnt, ch5=alpha_milli, ch6=seg, ch7=ctrl_mode,
-	 * ch8=ball_ofs_cnt（外环输出/内环目标偏移）, ch9=pulse_freq_hz,
-	 * ch10=enc_cnt（内环反馈）, ch11=zero_mm,
-	 * ch12=kf_pos_mm, ch13=kf_vel（卡尔曼串联对比通道） */
-	int32_t vofa[14] = {
+	 * ch3=status, ch4=valid_cnt, ch5=alpha_milli, ch6=seg, ch7=hold,
+	 * ch8=kf_pos_mm, ch9=kf_vel（卡尔曼串联对比通道） */
+	int32_t vofa[10] = {
 		(int32_t) s_raw_mm,
 		(int32_t) s_filt_mm,
 		(int32_t) s_pos_cm_x10,
@@ -422,25 +396,18 @@ static void Tof_Process(void) {
 		(int32_t) TofFilter_GetAlphaMilli(&s_filter),
 		(int32_t) s_seg_id,
 		(int32_t) s_ctrl_mode,
-		(int32_t) s_ball_ofs_cnt,
-		Stepper_GetPulseFreqHz(),
-		Stepper_ReadEncoder(),
-		(int32_t) TofFilter_GetZeroMm(&s_filter),
 		(int32_t) s_kf_pos_mm,
 		(int32_t) s_kf_vel,
 	};
-	VOFA_SendFrame(vofa, 14);
+	VOFA_SendFrame(vofa, 10);
 }
 
-/* ===================== 串口命令：A/Z/S/H/B/P/I/D/R ========================= */
+/* ===================== 串口命令：A/Z/S/H/R ================================ */
 /* A<milli> : 设置 EMA 系数（20~1000，1000=直通）
  * Z        : 把当前滤波值设为零点；Z<mm> 显式设置零点距离
  * S<id>    : 设置测试段号（0~99，随 VOFA ch6 回传）
  * H / H1   : 平台保持——以当前编码器位置为零点锁定摆杆；H0 关闭并释放电机
- * B / B1   : 小球闭环——外环以 ToF 零点为目标控制小球到 O 点；B0 关闭并释放
- *            （B 与 H 互斥，同一电机任一时刻只挂一个环）
- * P/I/D<v> : 外环增益千分比在线整定（0~10000，如 P2500 = Kp 2.500）
- * R        : 清除滤波器窗口/EMA 与内外环积分（参数与零点保留） */
+ * R        : 清除滤波器窗口/EMA 与保持环积分（参数与零点保留） */
 static void TofCmd_ParseLine(const char *line) {
 	char  cmd;
 	char *end;
@@ -491,40 +458,11 @@ static void TofCmd_ParseLine(const char *line) {
 			Loop_SetMode(0);
 		}
 		break;
-	case 'B':
-	case 'b':
-		if (!has_val || val != 0) {
-			Loop_SetMode(2);
-		} else {
-			Loop_SetMode(0);
-		}
-		break;
-	case 'P':
-	case 'p':
-		if (has_val && val >= 0 && val <= 10000) {
-			PID_SetGains(&s_ball_pid, (float) val / 1000.0f, s_ball_pid.ki, s_ball_pid.kd);
-		}
-		break;
-	case 'I':
-	case 'i':
-		if (has_val && val >= 0 && val <= 10000) {
-			PID_SetGains(&s_ball_pid, s_ball_pid.kp, (float) val / 1000.0f, s_ball_pid.kd);
-		}
-		break;
-	case 'D':
-	case 'd':
-		if (has_val && val >= 0 && val <= 10000) {
-			PID_SetGains(&s_ball_pid, s_ball_pid.kp, s_ball_pid.ki, (float) val / 1000.0f);
-		}
-		break;
 	case 'R':
 	case 'r':
 		TofFilter_Reset(&s_filter);
 		s_kf_seeded = 0; /* 卡尔曼通道下一有效帧重新播种（配置参数保留） */
 		PID_Reset(&s_hold_pid);
-		PID_Reset(&s_ball_pid);
-		s_ball_ofs_cnt = 0;
-		s_tof_lost_n   = 0;
 		s_win_total = 0;
 		s_win_valid = 0;
 		s_win_t0	= HAL_GetTick();
@@ -544,23 +482,16 @@ static void TofCmd_Poll(void) {
 	}
 }
 
-/* ===================== 闭环控制：内环（编码器） + 外环（小球位置） ========= */
-/* 级联结构（项目知识笔记 §13 术语）：外环 20Hz，反馈 ToF pos（EMA 滤波后、
- * 相对零点，0 = O 点），输出摆杆角度目标偏移；内环 50Hz ISR，编码器位置环
- * 跟踪该偏移。模式 1（H）是外环断开、偏移恒 0 的退化形态，即平台保持。
- * 模式 2（B）使能外环，目标 = 外环输出。 */
+/* ===================== 平台保持：编码器位置环（50Hz ISR） ================== */
+/* H1 以当前摆杆角度为零点锁定，目标恒 0。ToF 链路（滤波/KF 对比）与保持环
+ * 互不依赖，本分支仅保留保持环供机械固定；小球外环在 feature/ball-pos-pid。 */
 
 static void Loop_Init(void) {
 	Stepper_Init(); /* 校验 TIM2 PSC、启动 TIM3 编码器；不使能电机 */
 	PID_Init(&s_hold_pid, HOLD_PID_KP, HOLD_PID_KI, HOLD_PID_KD,
 			 -HOLD_OUT_LIMIT, HOLD_OUT_LIMIT, HOLD_PID_ILIM);
 	PID_SetDeadband(&s_hold_pid, HOLD_DEADBAND_CNT);
-	PID_Init(&s_ball_pid, BALL_PID_KP, BALL_PID_KI, BALL_PID_KD,
-			 -BALL_PID_OUT_LIM, BALL_PID_OUT_LIM, BALL_PID_ILIM);
-	PID_SetDeadband(&s_ball_pid, BALL_PID_DEADBAND_X10);
-	s_ctrl_mode	   = 0;
-	s_ball_ofs_cnt = 0;
-	s_tof_lost_n   = 0;
+	s_ctrl_mode = 0;
 	Stepper_SetTargetFreq(0);
 	Stepper_SetEnabled(false);
 }
@@ -573,52 +504,22 @@ static void Loop_SetMode(uint8_t mode) {
 		Stepper_SetEnabled(false);
 		return;
 	}
-	Stepper_EncoderZero(); /* 以当前摆杆角度为内环零点 */
+	Stepper_EncoderZero(); /* 以当前摆杆角度为保持零点 */
 	PID_Reset(&s_hold_pid);
-	PID_Reset(&s_ball_pid);
-	s_ball_ofs_cnt = 0;
-	s_tof_lost_n   = 0;
 	Stepper_SetEnabled(true);
 	s_ctrl_mode = mode;
 }
 
-/* 外环（20Hz，主循环随 Tof_Process 调用）：pos_cm_x10 → 内环目标偏移。
- * 仅模式 2 且本帧 ToF 有效时推进；连续无效超阈值则复位并回中，防失联跑飞 */
-static void BallOuter_Tick(void) {
-	float out;
-
-	if (s_ctrl_mode != 2u) {
-		return;
-	}
-	if (s_range_st != 0) {
-		if (s_tof_lost_n < 255u) {
-			s_tof_lost_n++;
-		}
-		if (s_tof_lost_n >= BALL_LOSS_MAX_FRAMES) {
-			PID_Reset(&s_ball_pid);
-			s_ball_ofs_cnt = 0; /* 回中：内环目标回到摆杆保持零点 */
-		}
-		return;
-	}
-	s_tof_lost_n = 0;
-
-	/* err = 0 - pos（PID 内部计算）；SIGN 吸收机械链路符号，见宏注释 */
-	out			 = BALL_PID_SIGN * PID_Update(&s_ball_pid, 0.0f, (float) s_pos_cm_x10);
-	s_ball_ofs_cnt = (int16_t) out; /* PID 输出已限幅 ±BALL_PID_OUT_LIM(400)，不溢出 */
-}
-
-/* 内环（50Hz，TIM1 ISR）：编码器位置环，目标 = 外环偏移（模式1恒为0） */
+/* 保持环（50Hz，TIM1 ISR）：编码器位置环，目标恒为 H 命令标定的零点 */
 static void InnerLoop_Tick(void) {
 	int32_t fb;
-	float	target;
 	float	f_out;
 
 	if (s_ctrl_mode == 0u) {
 		return;
 	}
-	target = (s_ctrl_mode == 2u) ? (float) s_ball_ofs_cnt : 0.0f;
 	fb	   = Stepper_ReadEncoder();
-	f_out  = PID_Update(&s_hold_pid, target, (float) fb);
+	f_out  = PID_Update(&s_hold_pid, 0.0f, (float) fb);
 	Stepper_SetTargetFreq((int32_t) f_out);
 }
 
