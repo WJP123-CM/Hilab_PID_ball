@@ -34,6 +34,7 @@
 #include "kalman.h"		   /* 2 维 CV 卡尔曼（中值后串联对比通道） */
 #include "stepper.h"	   /* 步进电机 / 编码器（平台保持用） */
 #include "pid.h"		   /* 平台位置保持 PID */
+#include "print.h"		   /* oled_print/serial_print 双通道打印（自检结果输出） */
 
 #include <stdio.h>
 #include <stdlib.h> /* strtol（串口参数解析） */
@@ -54,6 +55,9 @@
 #define OLED_PERIOD_MS   200u  /* OLED 刷新：5Hz */
 #define VALID_WIN_MS	   5000u /* 有效帧占比统计周期：5s（非刷新周期） */
 #define IWDG_PERIOD_MS  1000u  /* 主循环心跳检查 + 喂狗：1Hz */
+
+/* 测试开关：1=上电执行卡尔曼模块自检（仅测试分支，合回 main 前必须置 0） */
+#define KF_SELFTEST_ENABLE 1
 
 /* 卡尔曼串联通道初始参数（待实物标定后改写并回写此处）：
  * dt 名义值 = MEAS_PERIOD_MS，运行时按有效帧间隔实测更新；
@@ -101,6 +105,10 @@ static uint32_t		  s_kf_last_ms	= 0; /* 上一有效帧时刻（实测 dt 用）
 static volatile int16_t s_kf_pos_mm	= 0; /* KF 位置估计（mm） */
 static volatile int16_t s_kf_vel	= 0; /* KF 速度估计（mm/s，vel_max 已限幅） */
 
+#if KF_SELFTEST_ENABLE
+static uint16_t s_kf_st_fail = 0; /* 自检失败位图：bit n=1 表示用例 n+1 失败 */
+#endif
+
 /* ---- 有效帧占比：每帧实时结算（随 OLED 5Hz 刷新），计数器 5s 清零 ---- */
 static volatile uint32_t s_win_total  = 0; /* 窗口内已处理帧数 */
 static volatile uint32_t s_win_valid  = 0; /* 窗口内有效帧数（out_st==0） */
@@ -129,6 +137,9 @@ static void Loop_Init(void);
 static void Loop_SetMode(uint8_t mode);
 static void InnerLoop_Tick(void);
 static void OLED_Refresh(void);
+#if KF_SELFTEST_ENABLE
+static void KF_SelfTest(void);
+#endif
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -220,6 +231,9 @@ int main(void)
 	 * 小球静止时 VL53L1X 原始距离的期望值。Z 命令可在线覆盖此值。 */
 	TofFilter_SetZeroMm(&s_filter, 131);
 	KF_Init(&s_kf, 0.0f, 0.0f, KF_DT_NOMINAL_S, KF_Q_POS, KF_Q_VEL, KF_INIT_COV);
+#if KF_SELFTEST_ENABLE
+	KF_SelfTest(); /* 纯逻辑自检：不驱动电机/传感器，结果见 OLED 滚动行与末行汇总 */
+#endif
 	Loop_Init();
 #if PLATFORM_HOLD_ON_BOOT
 	Loop_SetMode(1);
@@ -317,6 +331,114 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+#if KF_SELFTEST_ENABLE
+/* ===================== 卡尔曼模块自检（纯逻辑，免硬件） ====================
+ * 固定输入序列覆盖：参数兜底 / 静态收敛 / 协方差硬化 / 纯预测斜坡 /
+ * 新息门控拒绝与放行 / 速度限幅 / 非法输入 / 发散保护 / 复位与速度观测。
+ * 不依赖传感器与电机，每例结果经 OLED 滚动行输出，末行常驻汇总。
+ * 合回 main 前须把 KF_SELFTEST_ENABLE 置 0。 */
+
+static float kf_st_absf(float v) {
+	return (v < 0.0f) ? -v : v;
+}
+
+/* 记录单例结果：失败置位位图，并输出 "T<n> PASS/FAIL" 一行 */
+static void kf_st_case(int case_idx, int pass) {
+	if (!pass) {
+		s_kf_st_fail |= (uint16_t) (1u << case_idx);
+	}
+	oled_print("T%d %s", case_idx + 1, pass ? "PASS" : "FAIL");
+}
+
+static void KF_SelfTest(void) {
+	KF_t		 kf;
+	float		 nanv;
+	volatile float zero_v = 0.0f;
+	int			 i;
+
+	s_kf_st_fail = 0;
+
+	/* T1 参数兜底：非法 dt/q_pos/q_vel/init_cov 应回落默认值 */
+	KF_Init(&kf, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+	kf_st_case(0, (kf.dt == 0.02f) && (kf.q_pos == 1.0f) && (kf.q_vel == 100.0f) &&
+					   (kf.p00 == 1000.0f) && (kf.p01 == 0.0f));
+
+	/* T2 静态收敛：恒定观测 100mm，100 拍后贴住观测且速度归零 */
+	KF_Init(&kf, 0.0f, 0.0f, 0.02f, 2.0f, 500.0f, 100.0f);
+	for (i = 0; i < 100; i++) {
+		(void) KF_Predict(&kf);
+		(void) KF_UpdatePos(&kf, 100.0f, 2.0f);
+	}
+	kf_st_case(1, (kf_st_absf(kf.pos - 100.0f) <= 1.0f) && (kf_st_absf(kf.vel) <= 0.5f) &&
+					   (kf.diverge_cnt == 0u));
+
+	/* T3 协方差硬化：多次更新后 p01==p10、对角线非负 */
+	kf_st_case(2, (kf_st_absf(kf.p01 - kf.p10) <= 1e-6f) && (kf.p00 >= 0.0f) && (kf.p11 >= 0.0f));
+
+	/* T4 纯预测斜坡：无观测时 pos = pos0 + vel*dt*N = 10mm/s × 0.02s × 50 */
+	KF_Init(&kf, 0.0f, 10.0f, 0.02f, 1.0f, 100.0f, 10.0f);
+	for (i = 0; i < 50; i++) {
+		(void) KF_Predict(&kf);
+	}
+	kf_st_case(3, kf_st_absf(kf.pos - 10.0f) <= 0.01f);
+
+	/* T5 门控拒绝孤立尖峰：+30mm 跳变应被拒，位置不变、outlier 计数 +1 */
+	KF_Init(&kf, 100.0f, 0.0f, 0.02f, 2.0f, 500.0f, 100.0f);
+	for (i = 0; i < 60; i++) {
+		(void) KF_Predict(&kf);
+		(void) KF_UpdatePos(&kf, 100.0f, 2.0f);
+	}
+	{
+		int ret = KF_UpdatePosGated(&kf, 130.0f, 2.0f, 3.0f);
+		kf_st_case(4, (ret == 2) && (kf.outlier_cnt == 1u) && (kf_st_absf(kf.pos - 100.0f) <= 0.01f));
+	}
+
+	/* T6 门控放行真实台阶：连续第 3 拍越限应被接受并跟随 */
+	(void) KF_UpdatePosGated(&kf, 130.0f, 2.0f, 3.0f); /* 第 2 拍仍拒绝 */
+	{
+		int ret = KF_UpdatePosGated(&kf, 130.0f, 2.0f, 3.0f); /* 第 3 拍放行 */
+		kf_st_case(5, (ret == 1) && (kf.pos > 105.0f));
+	}
+
+	/* T7 速度限幅：大跳变下 |vel| 不得超过 vel_max=50 */
+	KF_Init(&kf, 100.0f, 0.0f, 0.02f, 2.0f, 500.0f, 100.0f);
+	KF_SetVelLimit(&kf, 50.0f);
+	(void) KF_Predict(&kf);
+	(void) KF_UpdatePos(&kf, 10000.0f, 2.0f);
+	kf_st_case(6, kf_st_absf(kf.vel - 50.0f) <= 1e-3f);
+
+	/* T8 非法输入拒绝：NaN 观测 / R<=0 返回 0 且状态不变 */
+	nanv = zero_v / zero_v; /* 运行时 0/0 → NaN，避免编译期常量折叠 */
+	{
+		float pos_before = kf.pos;
+		int	  r1		 = KF_UpdatePos(&kf, nanv, 2.0f);
+		int	  r2		 = KF_UpdatePos(&kf, 100.0f, 0.0f);
+		int	  r3		 = KF_UpdatePos(&kf, 100.0f, -1.0f);
+		kf_st_case(7, (r1 == 0) && (r2 == 0) && (r3 == 0) && (kf.pos == pos_before));
+	}
+
+	/* T9 发散保护：协方差超限时 Predict 应复位、计数并使协方差回到阈值内 */
+	kf.p00 = KF_DEFAULT_MAX_COV * 2.0f;
+	{
+		int ret = KF_Predict(&kf);
+		kf_st_case(8, (ret == 0) && (kf.diverge_cnt >= 1u) && (kf.p00 <= KF_DEFAULT_MAX_COV));
+	}
+
+	/* T10 复位 + 速度观测：Reset 清状态（参数保留）；UpdateVel 按 p11/(p11+R) 融合 */
+	KF_Reset(&kf, 42.0f, 0.0f, 10.0f);
+	KF_SetVelLimit(&kf, KF_DEFAULT_VEL_MAX); /* T7 改过的配置项恢复默认 */
+	(void) KF_UpdateVel(&kf, 100.0f, 1.0f);
+	kf_st_case(9, (kf_st_absf(kf.pos - 42.0f) <= 0.01f) && (kf_st_absf(kf.vel - 90.9f) <= 0.5f));
+
+	/* 汇总：末行 y=56 不被 5Hz 刷新区（16~55）覆盖，常驻显示 */
+	if (s_kf_st_fail == 0u) {
+		oled_print("KF ST:ALL 10 PASS");
+	} else {
+		oled_print("KF ST:FAIL mask 0x%03X", (unsigned) s_kf_st_fail);
+	}
+}
+#endif /* KF_SELFTEST_ENABLE */
 
 /* ===================== ToF：测距 → 滤波 → VOFA（主循环 20Hz） ============= */
 
