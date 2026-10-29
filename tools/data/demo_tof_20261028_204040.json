@@ -1,0 +1,12 @@
+{
+  "created": "20261028_204040",
+  "demo": true,
+  "zero_cm": 3.0,
+  "t_min": 3,
+  "t_max": 25,
+  "step_cm": 1,
+  "samples_per_point": 300,
+  "alpha_milli": 300,
+  "step_marker_ms": 2000,
+  "total_frames": 7500
+}

@@ -1,0 +1,174 @@
+{
+  "source": "tools\\data\\demo_tof_20261028_204040.csv",
+  "demo": true,
+  "valid_pct": 93.65217391304348,
+  "mae_filt_cm": 0.021047432780298102,
+  "max_err_filt_mean_cm": 0.16219512195122,
+  "max_err_filt_sample_cm": 0.5,
+  "max_err_raw_sample_cm": 3.5999999999999996,
+  "mae_raw_cm": 0.2311584161260883,
+  "std_raw_mm": 3.9278019273608296,
+  "std_filt_mm": 1.0348410053364554,
+  "noise_reduction": 3.795560774173026,
+  "jump_raw": 91,
+  "jump_filt": 0,
+  "smooth_reduction": 11.7995330199466,
+  "step": {
+    "pre_mm": 81,
+    "post_mm": 180.0,
+    "step_mm": 99.0,
+    "t_raw50": 2200,
+    "t_filt50": 2350,
+    "delay_raw_ms": 200,
+    "delay_filt_ms": 350,
+    "delay_added_ms": 150,
+    "rise_raw_ms": 250,
+    "rise_filt_ms": 400,
+    "overshoot_pct": 3.0303030303030303,
+    "pre": 81,
+    "post": 180.0
+  },
+  "recommended_alpha_milli": 150,
+  "alpha_sweep": [
+    {
+      "alpha_milli": 50,
+      "mae_cm": 0.02488014070316098,
+      "noise_cm": 0.0542431788985074,
+      "delay_added_ms": 150,
+      "score": 0.10259229964808635
+    },
+    {
+      "alpha_milli": 100,
+      "mae_cm": 0.02227742948185158,
+      "noise_cm": 0.06573620480387245,
+      "delay_added_ms": 150,
+      "score": 0.1005642397220452
+    },
+    {
+      "alpha_milli": 150,
+      "mae_cm": 0.021588591517698413,
+      "noise_cm": 0.07629863256740001,
+      "delay_added_ms": 150,
+      "score": 0.1004035231460684
+    },
+    {
+      "alpha_milli": 200,
+      "mae_cm": 0.02124264837128596,
+      "noise_cm": 0.08511297904023586,
+      "delay_added_ms": 150,
+      "score": 0.10049829732329775
+    },
+    {
+      "alpha_milli": 250,
+      "mae_cm": 0.021050040132130247,
+      "noise_cm": 0.09244931429726139,
+      "delay_added_ms": 150,
+      "score": 0.10067250584699332
+    },
+    {
+      "alpha_milli": 300,
+      "mae_cm": 0.021007443818014872,
+      "noise_cm": 0.09862620958451548,
+      "delay_added_ms": 150,
+      "score": 0.10093875429724064
+    },
+    {
+      "alpha_milli": 350,
+      "mae_cm": 0.020981269400241708,
+      "noise_cm": 0.10389497906555281,
+      "delay_added_ms": 150,
+      "score": 0.10117601835351935
+    },
+    {
+      "alpha_milli": 400,
+      "mae_cm": 0.02096466983603529,
+      "noise_cm": 0.10844506121430551,
+      "delay_added_ms": 150,
+      "score": 0.10138692289675057
+    },
+    {
+      "alpha_milli": 450,
+      "mae_cm": 0.02095368355541595,
+      "noise_cm": 0.1124206544890831,
+      "delay_added_ms": 150,
+      "score": 0.10157471627987011
+    },
+    {
+      "alpha_milli": 500,
+      "mae_cm": 0.02094599103281108,
+      "noise_cm": 0.1159339076901925,
+      "delay_added_ms": 150,
+      "score": 0.1017426864173207
+    },
+    {
+      "alpha_milli": 550,
+      "mae_cm": 0.020940240457129524,
+      "noise_cm": 0.1190740723300435,
+      "delay_added_ms": 150,
+      "score": 0.1018939440736317
+    },
+    {
+      "alpha_milli": 600,
+      "mae_cm": 0.020935650316835048,
+      "noise_cm": 0.12191372870544032,
+      "delay_added_ms": 150,
+      "score": 0.10203133675210706
+    },
+    {
+      "alpha_milli": 650,
+      "mae_cm": 0.020931769979500026,
+      "noise_cm": 0.1245130607985233,
+      "delay_added_ms": 150,
+      "score": 0.10215742301942618
+    },
+    {
+      "alpha_milli": 700,
+      "mae_cm": 0.020928336473316565,
+      "noise_cm": 0.12692285378640444,
+      "delay_added_ms": 150,
+      "score": 0.10227447916263678
+    },
+    {
+      "alpha_milli": 750,
+      "mae_cm": 0.020925190530737693,
+      "noise_cm": 0.12918665812220717,
+      "delay_added_ms": 150,
+      "score": 0.10238452343684805
+    },
+    {
+      "alpha_milli": 800,
+      "mae_cm": 0.020922228695012562,
+      "noise_cm": 0.13134241228522242,
+      "delay_added_ms": 150,
+      "score": 0.10248934930927368
+    },
+    {
+      "alpha_milli": 850,
+      "mae_cm": 0.020919376885671023,
+      "noise_cm": 0.13342372031482694,
+      "delay_added_ms": 150,
+      "score": 0.10259056290141237
+    },
+    {
+      "alpha_milli": 900,
+      "mae_cm": 0.02091657637149413,
+      "noise_cm": 0.13546092105106095,
+      "delay_added_ms": 150,
+      "score": 0.10268962242404717
+    },
+    {
+      "alpha_milli": 950,
+      "mae_cm": 0.02091377665492769,
+      "noise_cm": 0.1374820506458932,
+      "delay_added_ms": 150,
+      "score": 0.10278787918722235
+    },
+    {
+      "alpha_milli": 1000,
+      "mae_cm": 0.02091093199651319,
+      "noise_cm": 0.1395137804390864,
+      "delay_added_ms": 150,
+      "score": 0.1028866210184675
+    }
+  ]
+}
