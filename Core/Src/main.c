@@ -131,6 +131,7 @@ static void Loop_Init(void);
 static void Loop_SetMode(uint8_t mode);
 static void BallOuter_Tick(void);
 static void InnerLoop_Tick(void);
+static void Enc_Service(void);
 static void OLED_Refresh(void);
 /* USER CODE END PFP */
 
@@ -262,9 +263,10 @@ int main(void)
 			TofCmd_Poll();
 		}
 
-		/* OLED 5Hz 刷新 */
+		/* OLED 5Hz 刷新：先处理 Z 事件与掉电保存，再刷屏 */
 		if (s_oled_tick) {
 			s_oled_tick = 0;
+			Enc_Service();
 			OLED_Refresh();
 		}
 	}
@@ -502,7 +504,8 @@ static void TofCmd_Poll(void) {
  * 模式 2（B）使能外环，目标 = 外环输出。 */
 
 static void Loop_Init(void) {
-	Stepper_Init(); /* 校验 TIM2 PSC、启动 TIM3 编码器；不使能电机 */
+	Stepper_Init(); /* 校验 TIM2 PSC、启动 TIM3 编码器与 Z 相捕获；不使能电机 */
+	(void) Stepper_StoreRestore(); /* 恢复掉电前的编码器绝对位置（校验失败则为 0） */
 	PID_Init(&s_hold_pid, HOLD_PID_KP, HOLD_PID_KI, HOLD_PID_KD,
 			 -HOLD_OUT_LIMIT, HOLD_OUT_LIMIT, HOLD_PID_ILIM);
 	PID_SetDeadband(&s_hold_pid, HOLD_DEADBAND_CNT);
@@ -521,6 +524,7 @@ static void Loop_SetMode(uint8_t mode) {
 	s_ctrl_mode = 0;
 	Stepper_SetTargetFreq(0);
 	if (mode == 0u) {
+		Stepper_StoreMarkDirty(); /* 停机：主循环在静止后把绝对位置落盘 */
 		Stepper_SetEnabled(false);
 		return;
 	}
@@ -573,6 +577,33 @@ static void InnerLoop_Tick(void) {
 	Stepper_SetTargetFreq((int32_t) f_out);
 }
 
+/* ===================== Z 相事件与掉电保存：5Hz 主循环服务 ================= */
+/* Flash 擦除/编程期间 CPU 从 Flash 取指停顿约 20~40ms，会打断 50Hz 控制环，
+ * 因此只在模式 0（控制已停、电机休眠）且摆杆静止时才落盘。运行中直接掉电
+ * 时保存值滞后到最后一次停机位置——这是"断电后杆保持不动"前提下的取舍。 */
+static int32_t s_store_abs_ref = 0;
+
+static void Enc_Service(void) {
+	int32_t abs;
+
+	(void) Stepper_ReadEncoder(); /* 模式 0 时内环 ISR 不读编码器，由这里刷新计数 */
+	(void) Stepper_ProcessZ();	  /* Z 相：绝对计数对齐到最近整圈 */
+
+	if (s_ctrl_mode != 0u) {
+		s_store_abs_ref = Stepper_ReadEncoderAbs(); /* 控制中只跟踪，不擦 Flash */
+		return;
+	}
+
+	abs = Stepper_ReadEncoderAbs();
+	if (abs != s_store_abs_ref) {
+		s_store_abs_ref = abs; /* 仍在动：等静止后再存 */
+		return;
+	}
+	if (Stepper_StorePending()) {
+		(void) Stepper_StoreSave();
+	}
+}
+
 /* ===================== OLED：5Hz 局部刷新 ================================ */
 
 static void OLED_Refresh(void) {
@@ -586,7 +617,8 @@ static void OLED_Refresh(void) {
 	OLED_Print(0, 32, "POS:%c%ld.%ld cm", sign, (long) (abs_pos / 10), (long) (abs_pos % 10));
 	OLED_Print(0, 40, "ST:%d A:%d", (int) s_range_st, (int) TofFilter_GetAlphaMilli(&s_filter));
 	OLED_Print(0, 48, "V:%3lu%% M:%d S:%d", (unsigned long) s_valid_pct, (int) s_ctrl_mode, (int) s_seg_id);
-	OLED_Print(0, 56, "ENC:%6ld", Stepper_ReadEncoder());
+	OLED_Print(0, 56, "ENC:%6ld Z:%lu", (long) Stepper_ReadEncoderAbs(),
+			   (unsigned long) Stepper_GetZCount());
 	ssd1306_UpdateRect(0, 16, SSD1306_WIDTH, 48);
 }
 
@@ -622,6 +654,13 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 			s_loop_alive = 0;
 			HAL_IWDG_Refresh(&hiwdg);
 		}
+	}
+}
+
+/* Z 相（TIM3_CH3 = PB0）捕获回调：ISR 内只登记事件，对齐/落盘在主循环 Enc_Service */
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
+	if (htim->Instance == TIM3) {
+		Stepper_ZIndexEvent();
 	}
 }
 

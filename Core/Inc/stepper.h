@@ -110,8 +110,41 @@ int32_t Stepper_GetPulseFreqHz(void);
  * 若实测相反（闭环发散即为此现象），对调编码器 A/B 相接线或对调 DIR 宏 */
 int32_t Stepper_ReadEncoder(void);
 
-/* 编码器累计位置清零：当前时刻为新的 0 点（对位基准/测试归零用） */
+/* 编码器累计位置清零：当前时刻为新的 0 点（对位基准/测试归零用）。
+ * 只清"相对"计数，不影响掉电保存使用的绝对计数 */
 void Stepper_EncoderZero(void);
+
+/* ==================== 绝对位置与掉电保存（Flash 末页） ====================
+ * 掉电保存：程序用前 63 页，最后 1 页（0x0800FC00，链接脚本已减为 63K）
+ * 专用于存绝对累计计数。前提：断电期间摆杆不动（有自锁/配重）。
+ * Z 相（TIM3_CH3 / PB0）每圈一个脉冲，用于把绝对计数对齐到整圈零点。 */
+#define STEPPER_ENC_STORE_ADDR	0x0800FC00u
+#define STEPPER_ENC_STORE_MAGIC 0x454E4350u /* 'ENCP' */
+
+/* 读绝对累计计数（不随 Stepper_EncoderZero 清零，上电由 Flash 恢复） */
+int32_t Stepper_ReadEncoderAbs(void);
+
+/* 已捕获的 Z 相脉冲总数（诊断用，上电从 0 开始） */
+uint32_t Stepper_GetZCount(void);
+
+/* Z 相捕获事件登记——仅由 TIM3 捕获 ISR 调用，只置标志不做事 */
+void Stepper_ZIndexEvent(void);
+
+/* 主循环调用：处理待定 Z 事件，把绝对计数对齐到最近整圈；返回是否校准 */
+bool Stepper_ProcessZ(void);
+
+/* 上电从 Flash 恢复绝对计数（magic+校验不符则返回 false，计数保持 0） */
+bool Stepper_StoreRestore(void);
+
+/* 标记位置有变化，需在主循环落盘（ISR 安全） */
+void Stepper_StoreMarkDirty(void);
+
+/* 是否有待落盘的位置（主循环用） */
+bool Stepper_StorePending(void);
+
+/* 把绝对计数写入 Flash 末页（仅主循环调用；擦写期间 CPU 取指停顿约 20ms，
+ * 因此只在模式 0（控制已停、电机休眠）时执行） */
+bool Stepper_StoreSave(void);
 
 /* ==================== 编码器速度滤波（N 拍块差分 + 一阶低通对照） ========
  * 噪声模型（2026-10-27 开环定频采集实测）：低速段量化噪声主导（20ms 差分

@@ -56,7 +56,10 @@ ENTRY(Reset_Handler)
 MEMORY
 {
 RAM (xrw)      : ORIGIN = 0x20000000, LENGTH = 20K
-FLASH (rx)      : ORIGIN = 0x8000000, LENGTH = 64K
+/* 63K = 前 63 页供程序；最后 1 页（0x0800FC00~0x0800FFFF, 1KB）保留作
+ * 编码器绝对位置掉电保存数据页（ENC_STORE_ADDR，见 stepper.c）。
+ * 注意：CubeMX 重新生成会覆盖本文件，须手工保留此修改。 */
+FLASH (rx)      : ORIGIN = 0x8000000, LENGTH = 63K
 }
 
 /* Highest address of the user mode stack */

@@ -7,7 +7,8 @@
  */
 #include "stepper.h"
 
-#include "tim.h" /* htim2/htim3 */
+#include "stm32f1xx_hal_flash_ex.h" /* Flash 页擦除（掉电位置保存） */
+#include "tim.h"					/* htim2/htim3 */
 
 /* STEP 脉冲通道：TIM2_CH4 = PA3 */
 #define STEP_CHANNEL TIM_CHANNEL_4
@@ -70,8 +71,13 @@ StepperCmd_t StepperSm_Update(StepperSm_t *sm, int32_t target_hz) {
 /* ==================== 硬件下发（TIM2 PWM / GPIO） ======================== */
 
 /* 编码器累计位置状态（TIM3 CNT 为 16 位，回绕由 ReadEncoder 差分累计） */
-static int32_t		s_enc_total = 0;	 /* 32 位累计计数 */
+static int32_t		s_enc_total = 0;	 /* 32 位累计计数（相对：EncoderZero 清零） */
 static uint16_t		s_enc_last	= 0u;	 /* 上一次读取的 CNT 原始值 */
+static int32_t		s_enc_abs	= 0;	 /* 绝对累计计数（不随 EncoderZero 清零，
+										  * 上电由 Flash 恢复，Z 相校准） */
+static volatile uint32_t s_z_cnt	  = 0u;	  /* Z 相脉冲总数（诊断） */
+static volatile bool	 s_z_pending  = false; /* 有未处理的 Z 事件 */
+static volatile bool	 s_store_dirty = true; /* 需要落盘（上电未确认前为脏） */
 static bool			s_running	= false; /* STEP 脉冲输出状态（内部启停幂等） */
 static StepperSm_t	s_sm;				 /* 速度控制状态机（决策见 StepperSm_Update） */
 
@@ -91,8 +97,13 @@ void Stepper_Init(void) {
 	if (HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL) != HAL_OK) {
 		Error_Handler();
 	}
+	/* Z 相（TIM3_CH3 = PB0）输入捕获中断：每圈一个脉冲，ISR 只登记事件 */
+	if (HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_3) != HAL_OK) {
+		Error_Handler();
+	}
 	s_enc_last	= (uint16_t) __HAL_TIM_GET_COUNTER(&htim3);
 	s_enc_total = 0;
+	s_enc_abs	= 0; /* 真实值由上电 Stepper_StoreRestore 恢复 */
 
 	StepperSm_Init(&s_sm);
 	/* 上电安全态：不使能电机、不输出脉冲（PA1/PA2 已由 gpio.c 初始化为低） */
@@ -168,13 +179,127 @@ int32_t Stepper_GetPulseFreqHz(void) {
 }
 
 int32_t Stepper_ReadEncoder(void) {
-	uint16_t now = (uint16_t) __HAL_TIM_GET_COUNTER(&htim3);
+	uint16_t now;
+	int16_t	 d;
+	uint32_t pm;
+
+	/* 临界区：本函数既被 50Hz TIM1 ISR 调用（模式1/2），
+	 * 也被 5Hz 主循环 Enc_Service 调用（模式0）。若主循环在执行中途被
+	 * ISR 抢占，两次调用会出现差分重算，累计值被多计。临界区仅几条指令 */
+	pm = __get_PRIMASK();
+	__disable_irq();
 	/* int16_t 差分天然处理 16 位回绕（正反向越界均正确）；
 	 * 安全条件：两次调用间隔内计数变化 < 32768。50Hz 调用下对应
 	 * 转速上限 ≈ 24600rpm，远超本电机工况，恒安全 */
-	s_enc_total += (int16_t) (now - s_enc_last);
+	now			= (uint16_t) __HAL_TIM_GET_COUNTER(&htim3);
+	d			= (int16_t) (now - s_enc_last);
+	s_enc_total += d;
+	s_enc_abs   += d;
 	s_enc_last	= now;
+	__set_PRIMASK(pm);
+
+	if (d != 0) {
+		s_store_dirty = true; /* 位置变化，待主循环落盘 */
+	}
 	return s_enc_total;
+}
+
+/* ==================== 绝对位置 / Z 相 / 掉电保存 ======================== */
+
+/* Flash 数据页布局（12 字节，WORD 编程） */
+typedef struct {
+	uint32_t magic;
+	uint32_t enc_abs;
+	uint32_t sum;
+} EncStore_t;
+
+static uint32_t enc_store_sum(uint32_t v) {
+	return STEPPER_ENC_STORE_MAGIC ^ v;
+}
+
+int32_t Stepper_ReadEncoderAbs(void) {
+	return s_enc_abs;
+}
+
+uint32_t Stepper_GetZCount(void) {
+	return s_z_cnt;
+}
+
+/* ISR 内只登记，不做计算/不写 Flash */
+void Stepper_ZIndexEvent(void) {
+	s_z_cnt++;
+	s_z_pending	  = true;
+	s_store_dirty = true;
+}
+
+bool Stepper_ProcessZ(void) {
+	int32_t q;
+	int32_t r;
+
+	if (!s_z_pending) {
+		return false;
+	}
+	s_z_pending = false;
+
+	/* Z 为整圈零点：对齐到最近整圈（C 除法向零截断，余数过半圈才进位） */
+	q = s_enc_abs / (int32_t) STEPPER_ENC_CPR;
+	r = s_enc_abs % (int32_t) STEPPER_ENC_CPR;
+	if (r > (int32_t) STEPPER_ENC_CPR / 2) {
+		q++;
+	} else if (r < -((int32_t) STEPPER_ENC_CPR / 2)) {
+		q--;
+	}
+	s_enc_abs = q * (int32_t) STEPPER_ENC_CPR;
+	return true;
+}
+
+void Stepper_StoreMarkDirty(void) {
+	s_store_dirty = true;
+}
+
+bool Stepper_StorePending(void) {
+	return s_store_dirty;
+}
+
+bool Stepper_StoreRestore(void) {
+	const EncStore_t *d = (const EncStore_t *) STEPPER_ENC_STORE_ADDR;
+
+	if ((d->magic != STEPPER_ENC_STORE_MAGIC) || (d->sum != enc_store_sum(d->enc_abs))) {
+		return false; /* 未写过/被擦除（全 0xFF）或校验失败 */
+	}
+	s_enc_abs	  = (int32_t) d->enc_abs;
+	s_store_dirty = false;
+	return true;
+}
+
+bool Stepper_StoreSave(void) {
+	EncStore_t			  d;
+	FLASH_EraseInitTypeDef ei = {0};
+	uint32_t			  page_err = 0u;
+	const uint32_t		 *p;
+	HAL_StatusTypeDef	  ok;
+
+	d.magic	  = STEPPER_ENC_STORE_MAGIC;
+	d.enc_abs = (uint32_t) s_enc_abs;
+	d.sum	  = enc_store_sum(d.enc_abs);
+
+	HAL_FLASH_Unlock();
+	__HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_PGERR | FLASH_FLAG_WRPERR);
+	ei.TypeErase   = FLASH_TYPEERASE_PAGES;
+	ei.PageAddress = STEPPER_ENC_STORE_ADDR;
+	ei.NbPages	   = 1u;
+	ok			   = HAL_FLASHEx_Erase(&ei, &page_err);
+	if (ok == HAL_OK) {
+		for (p = (const uint32_t *) &d; p < (const uint32_t *) (&d + 1); p++) {
+			ok = HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, (uint32_t) p, *p);
+			if (ok != HAL_OK) {
+				break;
+			}
+		}
+	}
+	HAL_FLASH_Lock();
+	s_store_dirty = false; /* 失败不重试：避免主循环被反复擦写阻塞 */
+	return ok == HAL_OK;
 }
 
 /* ==================== 编码器速度滤波（实现见 stepper.h 噪声模型注释） ===== */
