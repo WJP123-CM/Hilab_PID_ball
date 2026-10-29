@@ -75,9 +75,13 @@
 #define BALL_PID_ILIM		 100.0f /* 积分限幅（计数） */
 #define BALL_PID_OUT_LIM	 400.0f /* 外环输出限幅（计数，≈36°）防目标角度翻车 */
 #define BALL_PID_DEADBAND_X10 3.0f  /* 死区 ±0.3cm（≈1.6σ，σ=1.87mm 实测） */
-/* 环路符号：+1 表示"PID 输出正偏移 → pos 减小"。符号错则正反馈跑飞：
- * 判定实验——B1 后把球手动偏到 +2cm 松手，若杆动作使 pos 继续增大，
- * 立即 B0 并把本宏改 -1。TOF_POS_SIGN 改动后本宏同样要跟着取反。 */
+/* 环路符号：+1 表示"PID 输出正偏移 → pos 减小"。符号错则正反馈跑飞。
+ * 符号链（用户确认：编码器示数与 ToF 测距示数正相关）：
+ *   freq>0 → enc 增大（ENC_POS_DIR_SIGN=+1）
+ *   enc 增大 ↔ ToF 读数增大 ↔ pos 增大
+ *   外环 err=0-pos：pos>0 → 输出为负 → 编码器目标偏移为负 → enc 减小 → pos 减小
+ * 故 +1 自洽，无需实测翻转。若实物上 pos 与 enc 一增一减，先查 A/B 相接线
+ * 与 TOF_POS_SIGN，再同步取反本宏（不可只改一个）。 */
 #define BALL_PID_SIGN		 (+1)
 #define BALL_LOSS_MAX_FRAMES 10u /* ToF 连续无效 0.5s → 外环回中（防失联跑飞） */
 /* USER CODE END PD */

@@ -127,8 +127,10 @@ int32_t Stepper_ReadEncoderAbs(void);
 /* ==================== 编码器绝对位置软限幅 ==============================
  * 只在电机"朝超出限位区间外"的方向运动时切断 PWM；返回区间内的方向
  * 始终放行，避免顶死在限位后无法退回。
- * ENC_POS_DIR_SIGN：s_enc_abs 增大时对应 Stepper_SetTargetFreq 的符号，
- * 默认 +1；若实物上增大方向与预期相反，改为 -1（与 BALL_PID_SIGN 同理）。 */
+ * ENC_POS_DIR_SIGN：s_enc_abs 增大时对应 Stepper_SetTargetFreq 的符号。
+ * 内部约定 freq>0 → enc 增大；依据是用户确认的"编码器示数与 ToF 测距示数
+ * 正相关"，即 enc 增大同时 pos 增大，故该宏与 BALL_PID_SIGN 必同号。
+ * 取 +1；仅当首测发现 freq>0 实际使 enc 减小时才改 -1。 */
 #define ENC_POS_LIM_MIN	  4400   /* 允许的最小绝对计数 */
 #define ENC_POS_LIM_MAX	  4800   /* 允许的最大绝对计数 */
 #define ENC_POS_DIR_SIGN  (+1)
