@@ -415,23 +415,27 @@ static void Tof_Process(void) {
 	/* 外环与滤波同拍（20Hz）：pos 更新后立刻推进外环，避免 50Hz 重复吃旧数据 */
 	BallOuter_Tick();
 
-	/* VOFA FireWater：ch0=raw_mm, ch1=filt_mm, ch2=pos_cm_x10,
-	 * ch3=status, ch4=valid_cnt, ch5=alpha_milli, ch6=seg, ch7=ctrl_mode,
-	 * ch8=ball_ofs_cnt（外环输出/内环目标偏移）, ch9=pulse_freq_hz,
-	 * ch10=enc_cnt（内环反馈）, ch11=zero_mm */
+	/* VOFA FireWater（电机/编码器观测集；测距原始通道已移除，仅保留球位置）：
+	 * ch0=ctrl_mode, ch1=estop, ch2=enc_rel（内环反馈）,
+	 * ch3=hold_target（内环目标：模式2=外环偏移，其余 0）, ch4=hold_err,
+	 * ch5=hold_integral（×1000，Hz）, ch6=pulse_freq_hz（实际脉冲频率）,
+	 * ch7=enc_abs（绝对位置，限幅基准）, ch8=z_cnt, ch9=pos_cm_x10,
+	 * ch10=ball_ofs_cnt（外环输出）, ch11=motor_en（PA1 使能电平） */
+	int32_t enc_rel	  = Stepper_ReadEncoder();
+	int32_t hold_tgt  = (s_ctrl_mode == 2u) ? (int32_t) s_ball_ofs_cnt : 0;
 	int32_t vofa[12] = {
-		(int32_t) s_raw_mm,
-		(int32_t) s_filt_mm,
-		(int32_t) s_pos_cm_x10,
-		(int32_t) s_range_st,
-		(int32_t) s_valid_cnt,
-		(int32_t) TofFilter_GetAlphaMilli(&s_filter),
-		(int32_t) s_seg_id,
 		(int32_t) s_ctrl_mode,
-		(int32_t) s_ball_ofs_cnt,
+		(int32_t) s_key_estop,
+		enc_rel,
+		hold_tgt,
+		hold_tgt - enc_rel,
+		(int32_t) (s_hold_pid.integral * 1000.0f),
 		Stepper_GetPulseFreqHz(),
-		Stepper_ReadEncoder(),
-		(int32_t) TofFilter_GetZeroMm(&s_filter),
+		Stepper_ReadEncoderAbs(),
+		(int32_t) Stepper_GetZCount(),
+		(int32_t) s_pos_cm_x10,
+		(int32_t) s_ball_ofs_cnt,
+		(HAL_GPIO_ReadPin(Motor_enabled_GPIO_Port, Motor_enabled_Pin) == GPIO_PIN_SET) ? 1 : 0,
 	};
 	VOFA_SendFrame(vofa, 12);
 }
