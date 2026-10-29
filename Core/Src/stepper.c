@@ -207,6 +207,9 @@ int32_t Stepper_ReadEncoder(void) {
 	 * 转速上限 ≈ 24600rpm，远超本电机工况，恒安全 */
 	now			= (uint16_t) __HAL_TIM_GET_COUNTER(&htim3);
 	d			= (int16_t) (now - s_enc_last);
+	/* 统一方向：STEPPER_ENC_DIR_SIGN 修正 A/B 相接反，使计数增量与 freq 同向
+	 * （否则内环成正反馈、软限幅判断方向也反） */
+	d			= (int16_t) (STEPPER_ENC_DIR_SIGN * d);
 	s_enc_total += d;
 	s_enc_abs   += d;
 	s_enc_last	= now;

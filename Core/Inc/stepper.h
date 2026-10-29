@@ -124,13 +124,17 @@ void Stepper_EncoderZero(void);
 /* 读绝对累计计数（不随 Stepper_EncoderZero 清零，上电由 Flash 恢复） */
 int32_t Stepper_ReadEncoderAbs(void);
 
+/* 编码器计数方向：+1 = 计数增量与 Stepper_SetTargetFreq 正号同向。
+ * 实测（2026-10-29）：H1 下电机持续单方向旋转且软限幅不触发，说明
+ * freq>0 时原始 A/B 计数在减小（A/B 相接反或 DIR 极性相反），取 -1 修正。
+ * 本宏统一作用于相对计数与绝对计数，改回接线修正后可恢复 +1。 */
+#define STEPPER_ENC_DIR_SIGN (-1)
+
 /* ==================== 编码器绝对位置软限幅 ==============================
  * 只在电机"朝超出限位区间外"的方向运动时切断 PWM；返回区间内的方向
  * 始终放行，避免顶死在限位后无法退回。
- * ENC_POS_DIR_SIGN：s_enc_abs 增大时对应 Stepper_SetTargetFreq 的符号。
- * 内部约定 freq>0 → enc 增大；依据是用户确认的"编码器示数与 ToF 测距示数
- * 正相关"，即 enc 增大同时 pos 增大，故该宏与 BALL_PID_SIGN 必同号。
- * 取 +1；仅当首测发现 freq>0 实际使 enc 减小时才改 -1。 */
+ * 注意：本限幅依赖 STEPPER_ENC_DIR_SIGN 与 ENC_POS_DIR_SIGN 一致——
+ * 若 enc 符号反了，越界判断方向随之反，限幅会完全失效（已实测过）。 */
 #define ENC_POS_LIM_MIN	  4400   /* 允许的最小绝对计数 */
 #define ENC_POS_LIM_MAX	  4800   /* 允许的最大绝对计数 */
 #define ENC_POS_DIR_SIGN  (+1)
