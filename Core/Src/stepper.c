@@ -153,7 +153,21 @@ static void PwmSetFreq(uint32_t freq_hz) {
 }
 
 void Stepper_SetTargetFreq(int32_t freq_hz) {
-	StepperCmd_t cmd = StepperSm_Update(&s_sm, freq_hz);
+	StepperCmd_t cmd;
+	int32_t		 pos_dir;
+	int32_t		 abs_pos;
+
+	/* 绝对位置软限位：仅在电机朝"越界方向"运动时切断。
+	 * 位置反馈由 ReadEncoder 每 20ms 更新，故限位响应延迟 ≤20ms。
+	 * 反向（退回区间内）永远放行，避免顶死在限位后无法退出 */
+	abs_pos	 = s_enc_abs;
+	pos_dir	 = (freq_hz > 0) ? ENC_POS_DIR_SIGN : ((freq_hz < 0) ? -ENC_POS_DIR_SIGN : 0);
+	if (((pos_dir > 0) && (abs_pos >= (int32_t) ENC_POS_LIM_MAX)) ||
+		((pos_dir < 0) && (abs_pos <= (int32_t) ENC_POS_LIM_MIN))) {
+		freq_hz = 0; /* 越界方向一律按"目标 0"处理：停脉冲、绕组保持锁定 */
+	}
+
+	cmd = StepperSm_Update(&s_sm, freq_hz);
 
 	if (cmd.dir_changed) {
 		/* 换向拍：只建立 DIR 电平不发脉冲（D36A 要求换向后 ≥1ms 再发脉冲，
