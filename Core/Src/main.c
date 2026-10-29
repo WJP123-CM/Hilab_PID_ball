@@ -56,7 +56,7 @@
 
 /* 平台保持（摆杆初始角度锁定）：H1 以当前编码器位置为零点并保持；
  * 默认上电不使能，避免首次上电时电机突然动作。H0 关闭并释放电机。 */
-#define PLATFORM_HOLD_ON_BOOT 0
+#define PLATFORM_HOLD_ON_BOOT 0		 /* 0 = 不使能，1 = 使能 */
 #define HOLD_PID_KP		   2.0f	  /* Hz / 编码器计数 */
 #define HOLD_PID_KI		   0.05f
 #define HOLD_PID_KD		   0.0f
@@ -580,13 +580,14 @@ static void OLED_Refresh(void) {
 	char	sign	= (pos < 0) ? '-' : ' ';
 	int32_t abs_pos = (pos < 0) ? -(int32_t) pos : (int32_t) pos;
 
-	ssd1306_FillRectangle(0, 16, SSD1306_WIDTH - 1, 55, Black);
+	ssd1306_FillRectangle(0, 16, SSD1306_WIDTH - 1, 63, Black);
 	OLED_Print(0, 16, "RAW:%4d mm", (int) s_raw_mm);
 	OLED_Print(0, 24, "FLT:%4d mm", (int) s_filt_mm);
 	OLED_Print(0, 32, "POS:%c%ld.%ld cm", sign, (long) (abs_pos / 10), (long) (abs_pos % 10));
 	OLED_Print(0, 40, "ST:%d A:%d", (int) s_range_st, (int) TofFilter_GetAlphaMilli(&s_filter));
 	OLED_Print(0, 48, "V:%3lu%% M:%d S:%d", (unsigned long) s_valid_pct, (int) s_ctrl_mode, (int) s_seg_id);
-	ssd1306_UpdateRect(0, 16, SSD1306_WIDTH, 40);
+	OLED_Print(0, 56, "ENC:%6ld", Stepper_ReadEncoder());
+	ssd1306_UpdateRect(0, 16, SSD1306_WIDTH, 48);
 }
 
 /* ===================== TIM1 1ms 节拍 ===================================== */
