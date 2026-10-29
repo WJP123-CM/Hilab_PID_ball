@@ -52,6 +52,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/oled.c
     # Stepper motor driver (D36A: EN/DIR GPIO + TIM2_CH4 STEP pulse, signed-freq control)
     Core/Src/stepper.c
+    # ToF digital filter (median-5 + EMA, integer-only)
+    Core/Src/tof_filter.c
     # Standard single-loop positional PID controller (reusable, no external deps)
     Core/Src/pid.c
     # Basic Kalman filter observer (2D CV model: encoder + ranger fusion)
