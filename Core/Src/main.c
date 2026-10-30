@@ -310,7 +310,7 @@ int main(void)
 			s_oled_tick = 0;
 			Ctrl_EncService();
 
-			/* 运行时页面：仅 3 项——原始距离 / 零点校准后位置 / 有效帧占比 */
+			/* 运行时页面：原始距离 / 零点校准后位置 / 有效帧占比 / 编码器绝对位置 */
 			int16_t pos	  = g_tof.pos_cm_x10;
 			char	sign  = (pos < 0) ? '-' : ' ';
 			int32_t abs_pos = (pos < 0) ? -(int32_t) pos : (int32_t) pos;
@@ -319,7 +319,8 @@ int main(void)
 			OLED_Print(0, 0,  "RAW:%4d mm", (int) g_tof.raw_mm);
 			OLED_Print(0, 8,  "POS:%c%ld.%ld cm", sign, (long) (abs_pos / 10), (long) (abs_pos % 10));
 			OLED_Print(0, 16, "VAL:%3lu%%", (unsigned long) g_tof.valid_pct);
-			OLED_Flush(0, 0, OLED_WIDTH, 24);
+			OLED_Print(0, 24, "ENC:%6ld", (long) Encoder_ReadAbs());
+			OLED_Flush(0, 0, OLED_WIDTH, 32);
 		}
 
 		/* 按键事件消费（非阻塞）：急停锁存 / 解除锁存 */
