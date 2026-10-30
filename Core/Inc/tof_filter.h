@@ -56,19 +56,14 @@ typedef struct {
 	/* 标定与输出 */
 	int16_t  zero_mm;
 	int16_t  last_raw_mm;
-	int16_t  last_med_mm;   /* 最近有效帧的中值（供下游卡尔曼串联通道使用） */
 	int16_t  last_filt_mm;
 	bool     has_output;
-
-	/* 诊断计数 */
-	uint32_t valid_cnt;
-	uint32_t reject_cnt;
 } TofFilter_t;
 
 /** @brief 初始化滤波器（配置 alpha/零点并清空运行态） */
 void TofFilter_Init(TofFilter_t *f, uint16_t alpha_milli, int16_t zero_mm);
 
-/** @brief 清空中值窗口、EMA 与计数；保留 alpha/zero 配置 */
+/** @brief 清空中值窗口与 EMA 状态；保留 alpha/zero 配置 */
 void TofFilter_Reset(TofFilter_t *f);
 
 /** @brief 在线设置 EMA 系数（千分比，自动夹到 20~1000） */
@@ -89,26 +84,8 @@ bool TofFilter_ZeroHere(TofFilter_t *f);
  */
 bool TofFilter_Update(TofFilter_t *f, int16_t raw_mm, int8_t range_status);
 
-/** @brief 最近一次滤波输出（mm）；无有效输出返回 0 */
-int16_t TofFilter_GetMm(const TofFilter_t *f);
-
-/** @brief 最近有效帧的 5 点中值（mm，未经 EMA）；无有效输出返回 0 */
-int16_t TofFilter_GetMedianMm(const TofFilter_t *f);
-
-/** @brief 最近一次滤波位置（0.1cm）；无有效输出返回 0 */
+/** @brief 最近一次滤波位置（0.1cm）；无有效输出返回 0（纯字段读取直接用实例成员） */
 int16_t TofFilter_GetCmX10(const TofFilter_t *f);
-
-/** @brief 是否已产生有效滤波输出 */
-bool TofFilter_HasOutput(const TofFilter_t *f);
-
-/** @brief 已接收的有效帧数 */
-uint32_t TofFilter_GetValidCount(const TofFilter_t *f);
-
-/** @brief 当前 alpha（千分比） */
-uint16_t TofFilter_GetAlphaMilli(const TofFilter_t *f);
-
-/** @brief 当前零点（mm） */
-int16_t TofFilter_GetZeroMm(const TofFilter_t *f);
 
 #ifdef __cplusplus
 }

@@ -45,19 +45,18 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
-    Core/Src/vl53l1x.c
-    # Dual-channel print module (serial_print / oled_print)
-    Core/Src/print.c
-    # OLED application layer (home page / printf print / progress bar)
-    Core/Src/oled.c
-    # Stepper motor driver (D36A: EN/DIR GPIO + TIM2_CH4 STEP pulse, signed-freq control)
-    Core/Src/stepper.c
-    # ToF digital filter (median-5 + EMA, integer-only)
-    Core/Src/tof_filter.c
-    # Standard single-loop positional PID controller (reusable, no external deps)
-    Core/Src/pid.c
-    # Basic Kalman filter observer (2D CV model: encoder + ranger fusion)
-    Core/Src/kalman.c
+    # 硬件模块（一个硬件一个文件：驱动 + 该硬件的基本软件处理）
+    Core/Src/tof.c        # VL53L1X 驱动 + 逐帧滤波调用 + 有效帧统计
+    Core/Src/motor.c      # 步进电机：STEP/DIR/EN + 限幅/死区/斜率/换向决策
+    Core/Src/encoder.c    # 编码器计数/Z 校准/软限幅区间/Flash 掉电保存
+    Core/Src/oled.c       # OLED 屏幕原语
+    # 纯算法模块（无硬件依赖，可主机侧验证）
+    Core/Src/tof_filter.c # ToF 滤波（中值-5 + EMA，整数运算）
+    Core/Src/pid.c        # 单环位置式 PID
+    # 应用层模块（无硬件）
+    Core/Src/key.c        # PA0 按键消抖 + 事件队列
+    # 上位机协议、级联闭环、Z/掉电保存服务、VOFA 帧均在 main.c（仅主程序使用，
+    # 不单独成模块，避免为一处调用点增设文件与头文件）
     # OLED (SSD1306) driver
     Middleware/OLED/ssd1306.c
     Middleware/OLED/ssd1306_fonts.c

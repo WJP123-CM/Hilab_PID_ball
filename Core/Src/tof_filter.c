@@ -12,7 +12,12 @@
  */
 #include "tof_filter.h"
 
-/* 对前 n 个样本做中值（n<=5）；小数组插入排序，无动态内存 */
+/**
+ * @brief 求前 n 个样本的中值（拷贝后插入排序，无动态内存）
+ * @param buf 样本数组；n 样本数（0~TOF_FILTER_MEDIAN_N）
+ * @retval 中值；n == 0 时返回 0
+ * @note  仅 TofFilter_Update 调用；n ≤ 5，排序开销为常数级
+ */
 static int16_t median_of(const int16_t *buf, uint8_t n) {
 	int16_t v[TOF_FILTER_MEDIAN_N];
 	uint8_t i;
@@ -36,6 +41,10 @@ static int16_t median_of(const int16_t *buf, uint8_t n) {
 	return v[n / 2u];
 }
 
+/**
+ * @brief 初始化滤波器：设定 alpha 与零点后清空窗口和统计
+ * @param f 滤波器实例；alpha_milli EMA 千分比（越界自动夹取）；zero_mm 零点（mm）
+ */
 void TofFilter_Init(TofFilter_t *f, uint16_t alpha_milli, int16_t zero_mm) {
 	if (f == 0) {
 		return;
@@ -45,6 +54,9 @@ void TofFilter_Init(TofFilter_t *f, uint16_t alpha_milli, int16_t zero_mm) {
 	TofFilter_Reset(f);
 }
 
+/**
+ * @brief 清中值窗口/EMA/统计（保留 alpha 与零点），用于 R 命令与重新起测
+ */
 void TofFilter_Reset(TofFilter_t *f) {
 	uint8_t i;
 
@@ -58,13 +70,13 @@ void TofFilter_Reset(TofFilter_t *f) {
 	f->med_filled	= 0u;
 	f->ema_milli_mm	= 0;
 	f->last_raw_mm	= 0;
-	f->last_med_mm	= 0;
 	f->last_filt_mm	= 0;
 	f->has_output	= false;
-	f->valid_cnt	= 0u;
-	f->reject_cnt	= 0u;
 }
 
+/**
+ * @brief 设置 EMA 系数（千分比），越界自动夹到 [MIN, MAX]
+ */
 void TofFilter_SetAlpha(TofFilter_t *f, uint16_t alpha_milli) {
 	if (f == 0) {
 		return;
@@ -77,6 +89,9 @@ void TofFilter_SetAlpha(TofFilter_t *f, uint16_t alpha_milli) {
 	f->alpha_milli = alpha_milli;
 }
 
+/**
+ * @brief 设置零点距离（mm），越界自动夹到 [0, MAX_VALID_MM]
+ */
 void TofFilter_SetZeroMm(TofFilter_t *f, int16_t zero_mm) {
 	if (f == 0) {
 		return;
@@ -89,6 +104,10 @@ void TofFilter_SetZeroMm(TofFilter_t *f, int16_t zero_mm) {
 	f->zero_mm = zero_mm;
 }
 
+/**
+ * @brief 以当前滤波值为新零点
+ * @retval true = 已标定；false = 尚无有效输出，保持原零点
+ */
 bool TofFilter_ZeroHere(TofFilter_t *f) {
 	if (f == 0 || !f->has_output) {
 		return false;
@@ -97,6 +116,12 @@ bool TofFilter_ZeroHere(TofFilter_t *f) {
 	return true;
 }
 
+/**
+ * @brief 推入一帧原始测距值并推进滤波链（中值-5 → EMA）
+ * @param  raw_mm       原始距离（mm）；range_status 传感器状态（0 = 有效）
+ * @retval true = 本帧有效并已更新输出；false = 被拒（状态非 0 或越界），输出保持
+ * @note   调用周期须与传感器帧率一致（本工程 20Hz）
+ */
 bool TofFilter_Update(TofFilter_t *f, int16_t raw_mm, int8_t range_status) {
 	int16_t med;
 	int32_t target_milli;
@@ -107,11 +132,9 @@ bool TofFilter_Update(TofFilter_t *f, int16_t raw_mm, int8_t range_status) {
 
 	/* 无效帧/越界值：不进入窗口，输出保持上一有效值 */
 	if (range_status != 0) {
-		f->reject_cnt++;
 		return false;
 	}
 	if (raw_mm < TOF_FILTER_MIN_VALID_MM || raw_mm > TOF_FILTER_MAX_VALID_MM) {
-		f->reject_cnt++;
 		return false;
 	}
 
@@ -122,7 +145,6 @@ bool TofFilter_Update(TofFilter_t *f, int16_t raw_mm, int8_t range_status) {
 		f->med_filled++;
 	}
 	med = median_of(f->med_buf, f->med_filled);
-	f->last_med_mm = med;
 
 	/* EMA：首次有效输出直接对齐中值，避免上电从 0 缓慢爬升 */
 	target_milli = (int32_t) med * 1000;
@@ -134,24 +156,13 @@ bool TofFilter_Update(TofFilter_t *f, int16_t raw_mm, int8_t range_status) {
 	}
 
 	f->last_filt_mm = (int16_t) ((f->ema_milli_mm + 500) / 1000);
-	f->valid_cnt++;
 	return true;
 }
 
-int16_t TofFilter_GetMm(const TofFilter_t *f) {
-	if (f == 0 || !f->has_output) {
-		return 0;
-	}
-	return f->last_filt_mm;
-}
-
-int16_t TofFilter_GetMedianMm(const TofFilter_t *f) {
-	if (f == 0 || !f->has_output) {
-		return 0;
-	}
-	return f->last_med_mm;
-}
-
+/**
+ * @brief 相对零点的位置（0.1cm）
+ * @retval (滤波值 - 零点) × TOF_POS_SIGN；无有效输出时为 0，饱和到 int16 范围
+ */
 int16_t TofFilter_GetCmX10(const TofFilter_t *f) {
 	int32_t v;
 
@@ -165,20 +176,4 @@ int16_t TofFilter_GetCmX10(const TofFilter_t *f) {
 		v = -32768;
 	}
 	return (int16_t) v;
-}
-
-bool TofFilter_HasOutput(const TofFilter_t *f) {
-	return (f != 0) && f->has_output;
-}
-
-uint32_t TofFilter_GetValidCount(const TofFilter_t *f) {
-	return (f == 0) ? 0u : f->valid_cnt;
-}
-
-uint16_t TofFilter_GetAlphaMilli(const TofFilter_t *f) {
-	return (f == 0) ? 0u : f->alpha_milli;
-}
-
-int16_t TofFilter_GetZeroMm(const TofFilter_t *f) {
-	return (f == 0) ? 0 : f->zero_mm;
 }

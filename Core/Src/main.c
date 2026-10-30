@@ -26,14 +26,15 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "oled.h"		   /* OLED 基础封装 */
-#include "ssd1306.h"	   /* SSD1306 底层绘制（ssd1306_FillRectangle/UpdateRect 等） */
-#include "vl53l1x.h"	   /* VL53L1X ToF 测距传感器封装 */
-#include "tof_filter.h"	   /* 中值-5 + EMA 数字滤波器 */
-#include "stepper.h"	   /* 步进电机 / 编码器（平台保持用） */
-#include "pid.h"		   /* 平台位置保持 PID */
+#include "encoder.h"	/* 编码器计数/Z 校准/掉电保存 */
+#include "key.h"		/* PA0 按键消抖与事件队列 */
+#include "motor.h"		/* 步进电机脉冲/方向/使能 */
+#include "oled.h"		/* OLED 屏幕原语（页面文案在本文件组合） */
+#include "pid.h"		/* 内外环 PID */
+#include "tof.h"		/* 测距 → 滤波 → 有效帧占比 */
+#include "tof_filter.h" /* 命令参数范围（A/Z 命令夹取门限） */
 
-#include <stdio.h>
+#include <stdbool.h>
 #include <stdlib.h> /* strtol（串口参数解析） */
 /* USER CODE END Includes */
 
@@ -46,34 +47,28 @@
 /* USER CODE BEGIN PD */
 /* TIM1 基础节拍 = 1ms（CubeMX Counter Period=999）。业务软件分频：
  * 测距/滤波/VOFA 放主循环，避免阻塞 ISR；平台保持放 ISR 保证 50Hz 节拍 */
-#define CTRL_PERIOD_MS    20u  /* 平台保持控制：50Hz */
-#define MEAS_PERIOD_MS    50u  /* ToF 测距 + 滤波 + VOFA：20Hz */
-#define CMD_PERIOD_MS    100u  /* 串口命令解析：10Hz */
-#define OLED_PERIOD_MS   200u  /* OLED 刷新：5Hz */
-#define VALID_WIN_MS	   5000u /* 有效帧占比统计周期：5s（非刷新周期） */
-#define IWDG_PERIOD_MS  1000u  /* 主循环心跳检查 + 喂狗：1Hz */
+#define CTRL_PERIOD_MS 20u	/* 平台保持控制：0.05s */
+#define MEAS_PERIOD_MS 50u	/* ToF 测距 + 滤波 + VOFA：0.05s */
+#define CMD_PERIOD_MS  100u /* 串口命令解析：0.1s*/
+#define OLED_PERIOD_MS 200u /* OLED 刷新：0.2s*/
 
-/* 平台保持（摆杆初始角度锁定）：H1 以当前编码器位置为零点并保持；
- * 默认上电不使能，避免首次上电时电机突然动作。H0 关闭并释放电机。 */
-#define PLATFORM_HOLD_ON_BOOT 1		 /* 0 = 不使能，1 = 使能 */
-#define HOLD_PID_KP		   2.0f	  /* Hz / 编码器计数 */
-#define HOLD_PID_KI		   0.05f
-#define HOLD_PID_KD		   0.0f
-#define HOLD_PID_ILIM	   50.0f  /* 积分限幅（Hz） */
-#define HOLD_OUT_LIMIT	   400.0f /* 输出限幅（Hz） */
-#define HOLD_DEADBAND_CNT  3.0f	  /* 误差死区（计数） */
+/* ---- 平台保持（H，摆杆锁定）：以编码器位置为零点的内环 ---- */
+#define HOLD_PID_KP		  2.0f /* Hz / 编码器计数 */
+#define HOLD_PID_KI		  0.05f
+#define HOLD_PID_KD		  0.0f
+#define HOLD_PID_ILIM	  50.0f	 /* 积分限幅（Hz） */
+#define HOLD_OUT_LIMIT	  400.0f /* 输出限幅（Hz） */
+#define HOLD_DEADBAND_CNT 3.0f	 /* 误差死区（计数） */
 
-/* 小球位置闭环（外环，20Hz 与 ToF 同拍）：反馈 = EMA 滤波后的 pos_cm_x10
- * （相对 Z 命令标定的零点，0 = 管中心 O 点），输出 = 内环角度目标偏移
- * （编码器计数），由内环（50Hz 编码器位置环）跟踪。卡尔曼接入前反馈固定
- * 走 TofFilter（中值-5 + EMA），后续只换反馈源，环结构不变。
- * 默认值均为保守起步值，须按阶跃响应在线整定（P/I/D 命令，千分比）。 */
-#define BALL_PID_KP			 2.0f  /* 计数 / 0.1cm：1cm 偏差 → 20 计数 ≈ 1.8° */
-#define BALL_PID_KI			 0.05f  /* 消静差；杆存在倾角-重力静差时必需 */
-#define BALL_PID_KD			 0.0f  /* ToF 群延迟大（中值2帧+EMA），起步不用 D */
-#define BALL_PID_ILIM		 100.0f /* 积分限幅（计数） */
-#define BALL_PID_OUT_LIM	 400.0f /* 外环输出限幅（计数，≈36°）防目标角度翻车 */
-#define BALL_PID_DEADBAND_X10 3.0f  /* 死区 ±0.3cm（≈1.6σ，σ=1.87mm 实测） */
+/* ---- 小球位置闭环（B，外环 20Hz）：反馈 = 滤波后 pos_cm_x10（0 = O 点），
+ *      输出 = 内环角度目标偏移（编码器计数）。默认值为保守起步值，
+ *      须按阶跃响应在线整定（P/I/D 命令，千分比） ---- */
+#define BALL_PID_KP			  2.0f	 /* 计数 / 0.1cm：1cm 偏差 → 20 计数 ≈ 1.8° */
+#define BALL_PID_KI			  0.05f	 /* 消静差；杆存在倾角-重力静差时必需 */
+#define BALL_PID_KD			  0.0f	 /* ToF 群延迟大（中值2帧+EMA），起步不用 D */
+#define BALL_PID_ILIM		  100.0f /* 积分限幅（计数） */
+#define BALL_PID_OUT_LIM	  400.0f /* 外环输出限幅（计数，≈36°）防目标角度翻车 */
+#define BALL_PID_DEADBAND_X10 3.0f	 /* 死区 ±0.3cm（≈1.6σ，σ=1.87mm 实测） */
 /* 环路符号：+1 表示"PID 输出正偏移 → pos 减小"。符号错则正反馈跑飞。
  * 符号链（用户确认：编码器示数与 ToF 测距示数正相关）：
  *   freq>0 → enc 增大（ENC_POS_DIR_SIGN=+1）
@@ -84,22 +79,36 @@
 #define BALL_PID_SIGN		 (+1)
 #define BALL_LOSS_MAX_FRAMES 10u /* ToF 连续无效 0.5s → 外环回中（防失联跑飞） */
 
-/* ---- 按键 PA0（CubeMX 已配输入+内部下拉，按下 = 高电平）----
- * 采样在 TIM1 1ms 节拍回调内完成：只读 IDR 和几个计数器，O(1) 不阻塞。
- * 消抖：电平需连续 KEY_DEBOUNCE_MS(15ms) 保持不变才确认新稳态；
- * 事件经小队列交付主循环（ISR 单生产者 / 主循环单消费者），无锁。 */
-#define KEY_DEBOUNCE_MS	  15u	 /* 10~20ms 区间取中值 */
-#define KEY_LONG_MS		  1000u /* 按住满 1s 判定长按 */
-#define KEY_QUEUE_LEN	  4u
+/* 上电是否自动进入平台保持（0 = 不使能，1 = 使能） */
+#define PLATFORM_HOLD_ON_BOOT 1
 
-typedef enum {
-	KEY_EVT_NONE = 0,
-	KEY_EVT_PRESS,   /* 确认按下（高电平稳态建立） */
-	KEY_EVT_RELEASE, /* 确认松开 */
-	KEY_EVT_CLICK,   /* 单击：按下后未达长按阈值即松开 */
-	KEY_EVT_LONG,	 /* 长按：按住达到 KEY_LONG_MS（每次按压仅一次） */
-	KEY_EVT_CNT		 /* 事件种类计数（数组长度用） */
-} KeyEvent_t;
+/* 电机总开关：0 = 不操控电机（EN 保持休眠、不下发脉冲频率），
+ *                 1 = 正常输出（内环 PID → TIM2 脉冲 + EN 使能）
+ * 注意：EN 只管电机功率级（H 桥输出），不是驱动板电源开关——驱动板仍上电，
+ *       对最小系统板的供电不受影响。关掉后测距/滤波/编码器/串口整定照常运行，
+ *       用于脱机调传感器与增益 */
+#define MOTOR_CONTROL_ENABLE 0
+
+/* ================= VOFA 串口帧通道定义（唯一权威表） =================
+ * 原则：串口只送实时流变量；低频状态量（控制模式/急停/绝对位置/Z 计数/
+ * 电机使能）随 OLED 页面观察，不占串口带宽。
+ *   idx  名称            单位        来源
+ *   0    enc_rel         enc_cnt     内环反馈 Encoder_Read()
+ *   1    hold_target     enc_cnt     内环目标（模式2=外环偏移，其余 0）
+ *   2    hold_integral   Hz×1000     内环积分项（判积分饱和）
+ *   3    pulse_freq_hz   Hz          实际脉冲频率 Motor_GetPulseFreqHz()
+ *   4    pos_cm_x10      0.1cm       小球位置（ToF 滤波后）
+ *   5    ball_ofs_cnt    enc_cnt     外环输出
+ * 增删通道：只改本枚举 + Ctrl_SendTelemetry 填表 + 上位机 channels.json。 */
+enum {
+	VOFA_CH_ENC_REL = 0,   /* 0 内环反馈（编码器计数） */
+	VOFA_CH_HOLD_TARGET,   /* 1 内环目标（编码器计数） */
+	VOFA_CH_HOLD_INTEGRAL, /* 2 内环积分项 ×1000（Hz） */
+	VOFA_CH_PULSE_FREQ,	   /* 3 实际脉冲频率（Hz） */
+	VOFA_CH_POS_CM_X10,	   /* 4 小球位置（0.1cm） */
+	VOFA_CH_BALL_OFS,	   /* 5 外环输出（编码器计数） */
+	VOFA_CH_NUM			   /* 通道总数（=帧长） */
+};
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -110,70 +119,74 @@ typedef enum {
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-/* ---- ToF 滤波与数据状态（主循环独占写，ISR/OLED 只读） ---- */
-static TofFilter_t s_filter;
-
-static volatile int16_t  s_raw_mm	   = 0;	 /* 本帧原始距离（mm），无效帧为 0 */
-static volatile int16_t  s_filt_mm	   = 0;	 /* 滤波后距离（mm） */
-static volatile int16_t  s_pos_cm_x10 = 0;	 /* 滤波后位置（0.1cm） */
-static volatile int8_t	 s_range_st	   = -1; /* 0=有效；-1/-2=通信；-3=滤波量程拒绝 */
-static volatile uint32_t s_valid_cnt   = 0;	 /* 滤波器累计有效帧 */
-static volatile uint8_t  s_seg_id	   = 0;	 /* 测试段号（S 命令） */
-
-/* ---- 有效帧占比：每帧实时结算（随 OLED 5Hz 刷新），计数器 5s 清零 ---- */
-static volatile uint32_t s_win_total  = 0; /* 窗口内已处理帧数 */
-static volatile uint32_t s_win_valid  = 0; /* 窗口内有效帧数（out_st==0） */
-static volatile uint32_t s_win_t0	  = 0; /* 窗口起始时刻 ms */
-static volatile uint8_t	 s_valid_pct = 0; /* 0~100，最近窗口有效帧占比 */
-
 /* ---- 调度标志（TIM1 ISR 置位，主循环消费） ---- */
-static volatile uint8_t s_meas_tick = 0;
-static volatile uint8_t s_cmd_tick	= 0;
-static volatile uint8_t s_oled_tick = 0;
-static volatile uint8_t s_loop_alive = 0; /* 主循环心跳：ISR 每秒检查一次 */
+static volatile uint8_t s_meas_tick = 0; /* 测距/滤波/VOFA 0.05s */
+static volatile uint8_t s_cmd_tick	= 0; /* 串口命令解析 0.1s */
+static volatile uint8_t s_oled_tick = 0; /* OLED 刷新 0.2s */
+/* 主循环心跳：1 = 最近 1s 内主循环至少跑过一圈；ISR 据此决定是否喂狗 */
+static volatile uint8_t s_loop_alive = 0;
 
-/* ---- 控制模式：0=释放 1=平台保持（内环目标0） 2=小球闭环（外环→内环目标） ----
- * s_ctrl_mode/s_ball_ofs_cnt 由主循环写、TIM1 ISR 读，须 volatile */
-static PID_t			s_hold_pid;					/* 内环：编码器位置环 */
-static PID_t			s_ball_pid;					/* 外环：小球位置环（ToF pos → 计数偏移） */
-static volatile uint8_t s_ctrl_mode	   = 0;
-static volatile int16_t s_ball_ofs_cnt   = 0;		/* 外环输出：内环目标偏移（计数） */
-static volatile uint8_t s_tof_lost_n	   = 0;		/* 外环连续无效帧计数 */
-
-/* ---- 按键状态机（TIM1 ISR 写；队列由主循环读） ---- */
-static volatile uint8_t  s_key_q[KEY_QUEUE_LEN];
-static volatile uint8_t  s_key_q_head	  = 0;	/* ISR 写 */
-static volatile uint8_t  s_key_q_tail	  = 0;	/* 主循环写 */
-static uint8_t  s_key_stable			  = 0;	/* 已确认电平：1=按下 */
-static uint8_t  s_key_diff_cnt			  = 0;	/* 与稳态相反的连续采样数 */
-static uint16_t s_key_hold_ms			  = 0;	/* 稳态按下持续时长 */
-static uint8_t  s_key_long_sent			  = 0;	/* 本次按压已上报长按 */
-/* 验证用统计（主循环消费事件时累加，可经调试器读取核对） */
-static volatile uint8_t s_key_evt_cnt[KEY_EVT_CNT];
-static volatile uint8_t s_key_last_evt;
+/* ---- 控制状态：由主循环写、TIM1 ISR 读，须 volatile ---- */
+static PID_t			s_hold_pid;			/* 内环：编码器位置环 */
+static PID_t			s_ball_pid;			/* 外环：小球位置环（ToF pos → 计数偏移） */
+static volatile uint8_t s_ctrl_mode	   = 0; /* 0=释放 1=平台保持 2=小球闭环 */
+static volatile int16_t s_ball_ofs_cnt = 0; /* 外环输出：内环目标偏移（计数） */
+static volatile uint8_t s_tof_lost_n   = 0; /* 外环连续无效帧计数 */
 /* 急停锁存：1 = 已按 PA0 使电机休眠，松手不自动恢复 */
 static volatile uint8_t s_key_estop = 0;
+
+/* 掉电保存基准：最后一次落盘/跟踪的绝对位置 */
+static int32_t s_store_abs_ref = 0;
+
+/* 测距滤波器实例：算法在 tof_filter.c（纯整数），状态由应用层持有——
+ * 与下面的 PID 实例同一归属方式，命令直接操作实例，不再套一层转发 */
+static TofFilter_t s_tof_filter;
+
+/* 内外环参数表：全部集中在此，PID 模块只负责按表初始化（.deadband/.d_alpha
+ * 由 PID_InitFromCfg 就地校验，调用处不重复写校验逻辑） */
+static const PIDCfg_t s_hold_cfg = {
+	.kp		  = HOLD_PID_KP,
+	.ki		  = HOLD_PID_KI,
+	.kd		  = HOLD_PID_KD,
+	.out_min  = -HOLD_OUT_LIMIT,
+	.out_max  = HOLD_OUT_LIMIT,
+	.i_limit  = HOLD_PID_ILIM,
+	.deadband = HOLD_DEADBAND_CNT,
+	.d_alpha  = 1.0f, // 直通
+};
+
+static const PIDCfg_t s_ball_cfg = {
+	.kp		  = BALL_PID_KP,
+	.ki		  = BALL_PID_KI,
+	.kd		  = BALL_PID_KD,
+	.out_min  = -BALL_PID_OUT_LIM,
+	.out_max  = BALL_PID_OUT_LIM,
+	.i_limit  = BALL_PID_ILIM,
+	.deadband = BALL_PID_DEADBAND_X10,
+	.d_alpha  = 1.0f, // 直通微分
+};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-static void Tof_Process(void);
-static void TofCmd_Poll(void);
-static void TofCmd_ParseLine(const char *line);
-static void Loop_Init(void);
-static void Loop_SetMode(uint8_t mode);
-static void BallOuter_Tick(void);
-static void InnerLoop_Tick(void);
-static void Enc_Service(void);
-static void OLED_Refresh(void);
-static void Key_Tick1ms(void);
-static KeyEvent_t Key_PollEvent(void);
+/* 应用层：命令解析、级联控制、Z/掉电保存服务（仅本文件使用） */
+static void Cmd_ParseLine(const char *line);
+static void Cmd_Poll(void);
+static void Ctrl_Init(void);
+static void Ctrl_SetMode(uint8_t mode);
+static void Ctrl_OuterTick(void);
+static void Ctrl_InnerTick(void);
+static void Ctrl_EncService(void);
+static void Ctrl_SendTelemetry(void);
+static void Ctrl_PollKeyEvents(void);
+static void Ctrl_ResetLoops(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+/* 页面文案与取数都在 main 层就地实现（各页仅一处使用，不另设封装）；
+ * OLED 模块只提供屏幕原语，每次改动只回写改动区。 */
 /* USER CODE END 0 */
 
 /**
@@ -217,14 +230,15 @@ int main(void)
 	HAL_IWDG_Refresh(&hiwdg);
 
 	OLED_Init();
+	/* 启动页标题行 */
 	OLED_Print(0, 0, "TOF FILTER TEST");
-	ssd1306_UpdateRect(0, 0, SSD1306_WIDTH, 8);
+	OLED_Flush(0, 0, OLED_WIDTH, 8);
 	HAL_IWDG_Refresh(&hiwdg);
 
-	/* 复位诊断：OLED 第二行显示上次复位源——
-	 * P=上电/掉电 I=IWDG N=NRST S=软件。首次上电 P 属正常 */
+	/* 复位诊断：第二行显示上次复位源，P=上电/掉电 I=IWDG N=NRST S=软件 */
 	{
 		char rst_ch = 'S';
+
 		if (__HAL_RCC_GET_FLAG(RCC_FLAG_PORRST)) {
 			rst_ch = 'P';
 		} else if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST)) {
@@ -234,34 +248,34 @@ int main(void)
 		}
 		__HAL_RCC_CLEAR_RESET_FLAGS();
 		OLED_Print(0, 8, "RST:%c", rst_ch);
-		ssd1306_UpdateRect(0, 8, SSD1306_WIDTH, 8);
+		OLED_Flush(0, 8, OLED_WIDTH, 8);
 	}
 	HAL_IWDG_Refresh(&hiwdg);
 
 	/* VL53L1X 初始化 + 启动连续测量（Short 模式 250mm）。
-	 * 内部阻塞 ~数百 ms，期间持续喂狗防 IWDG 误复位 */
+	 * 内部阻塞 ~数百 ms；失败在应用层显示错误页并持续喂狗停机 */
 	{
-		VL53L1_Error err = VL53L1X_Init();
-		if (err != VL53L1_ERROR_NONE) {
+		int err = Tof_InitSensor();
+
+		if (err != 0) {
 			OLED_Print(0, 16, "VL53 FAIL");
-			OLED_Print(0, 24, "step:%s err:%d", VL53L1X_LastErrorStep(), (int) err);
-			ssd1306_UpdateRect(0, 16, SSD1306_WIDTH, 16);
-			while (1) { HAL_IWDG_Refresh(&hiwdg); }
+			OLED_Print(0, 24, "step:%s err:%d", g_tof.last_step, err);
+			OLED_Flush(0, 16, OLED_WIDTH, 16);
+			while (1) {
+				HAL_IWDG_Refresh(&hiwdg);
+			}
 		}
 	}
 	HAL_IWDG_Refresh(&hiwdg);
 
-	/* 滤波器与平台保持初始化：Stepper_Init 只校验 TIM2 配置并启动编码器，
-	 * 不使能电机、不输出脉冲；需要 H1 命令才进入保持 */
-	TofFilter_Init(&s_filter, TOF_FILTER_ALPHA_DEFAULT_MILLI, TOF_FILTER_ZERO_DEFAULT_MM);
-
-	/* 硬件标定零点：2026-10-29 实测 60s/930帧 mean=131.4mm, σ=1.87mm。
-	 * 小球静止时 VL53L1X 原始距离的期望值。Z 命令可在线覆盖此值。 */
-	TofFilter_SetZeroMm(&s_filter, 131);
-	Loop_Init();
-#if PLATFORM_HOLD_ON_BOOT
-	Loop_SetMode(1);
-#endif
+	/* 滤波器与零点 + 执行器/编码器/内外环初始化（Motor_Init 只校验 TIM2 配置、
+	 * Encoder_Init 只启动编码器，两者都不使能电机、不输出脉冲；上电模式由
+	 * Ctrl_Init 按 PLATFORM_HOLD_ON_BOOT 决定） */
+	TofFilter_Init(&s_tof_filter, TOF_FILTER_ALPHA_DEFAULT_MILLI, TOF_FILTER_ZERO_DEFAULT_MM);
+	/* 硬件标定零点：2026-10-29 实测 60s/930帧 mean=131.4mm, σ=1.87mm——
+	 * 小球静止时 VL53L1X 原始距离的期望值；Z 命令可在线覆盖 */
+	TofFilter_SetZeroMm(&s_tof_filter, 131);
+	Ctrl_Init();
 	HAL_IWDG_Refresh(&hiwdg);
 
 	/* 接收上位机命令（A/Z/S/H/B/P/I/D/R）；VOFA 数据流仍只含数值，不混入文本 */
@@ -286,46 +300,43 @@ int main(void)
 		/* 主循环心跳：任何一步卡死超过 1 个 IWDG 周期都会停止喂狗并复位 */
 		s_loop_alive = 1;
 
-		/* 测距/滤波/VOFA 在主循环执行，避免阻塞 TIM1 的 50Hz 保持控制 */
+		/* 20Hz：测距/滤波/统计 → 外环 → VOFA。放主循环避免阻塞 50Hz 内环 */
 		if (s_meas_tick) {
 			s_meas_tick = 0;
-			Tof_Process();
+			Tof_Tick(&s_tof_filter);
+			Ctrl_OuterTick();
+			Ctrl_SendTelemetry();
 		}
 
-		/* 串口命令解析：10Hz，一次可排空队列中的多条命令 */
+		/* 10Hz 串口命令解析：一次可排空队列中的多条命令 */
 		if (s_cmd_tick) {
 			s_cmd_tick = 0;
-			TofCmd_Poll();
+			Cmd_Poll();
 		}
 
-		/* OLED 5Hz 刷新：先处理 Z 事件与掉电保存，再刷屏 */
+		/* 5Hz：先处理 Z 事件与掉电保存，再刷运行时页面 */
 		if (s_oled_tick) {
 			s_oled_tick = 0;
-			Enc_Service();
-			OLED_Refresh();
+			Ctrl_EncService();
+
+			/* 运行时页面：测距/滤波/位置/状态/占比/模式/编码器绝对位置 */
+			int16_t pos		= g_tof.pos_cm_x10;
+			char	sign	= (pos < 0) ? '-' : ' ';
+			int32_t abs_pos = (pos < 0) ? -(int32_t) pos : (int32_t) pos;
+
+			OLED_ClearArea(0, 16, OLED_WIDTH, 48);
+			OLED_Print(0, 16, "RAW:%4d mm", (int) g_tof.raw_mm);
+			OLED_Print(0, 24, "FLT:%4d mm", (int) g_tof.filt_mm);
+			OLED_Print(0, 32, "POS:%c%ld.%ld cm", sign, (long) (abs_pos / 10), (long) (abs_pos % 10));
+			OLED_Print(0, 40, "ST:%d A:%d", (int) g_tof.range_status, (int) g_tof.alpha_milli);
+			OLED_Print(0, 48, "V:%3lu%% M:%c", (unsigned long) g_tof.valid_pct,
+					   (s_key_estop != 0u) ? 'E' : (char) ('0' + s_ctrl_mode));
+			OLED_Print(0, 56, "ENC:%6ld Z:%lu", (long) Encoder_ReadAbs(), (unsigned long) Encoder_GetZCount());
+			OLED_Flush(0, 16, OLED_WIDTH, 48);
 		}
 
-		/* 按键事件消费（非阻塞）：
-		 * PRESS → 电机急停并锁存（停控制 + 休眠 + 位置落盘），松手不恢复；
-		 * 再按一次解除锁存并恢复驱动器使能（仍为模式 0，需 H1/B1 启动） */
-		{
-			KeyEvent_t ke;
-
-			while ((ke = Key_PollEvent()) != KEY_EVT_NONE) {
-				s_key_last_evt = (uint8_t) ke;
-				s_key_evt_cnt[ke]++;
-
-				if (ke == KEY_EVT_PRESS) {
-					if (s_key_estop == 0u) {
-						s_key_estop = 1u;
-						Loop_SetMode(0);
-					} else {
-						s_key_estop = 0u;
-						Stepper_SetEnabled(true); /* 恢复力矩，杆锁在当前角度 */
-					}
-				}
-			}
-		}
+		/* 按键事件消费（非阻塞）：急停锁存 / 解除锁存 */
+		Ctrl_PollKeyEvents();
 	}
   /* USER CODE END 3 */
 }
@@ -372,235 +383,69 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 
-/* ===================== ToF：测距 → 滤波 → VOFA（主循环 20Hz） ============= */
+/* ===================== 应用层：级联闭环 =================================== */
+/* 外环（20Hz）反馈 ToF 位置（相对零点，0 = O 点），输出摆杆角度目标偏移；
+ * 内环（50Hz ISR）用编码器位置环跟踪该偏移。模式 1（H）是外环断开、偏移
+ * 恒 0 的退化形态，即平台保持；模式 2（B）使能外环。
+ * 时序：Ctrl_InnerTick ← TIM1 每 20ms；Ctrl_OuterTick ← 20Hz 紧跟 Tof_Tick；
+ *       Ctrl_SendTelemetry ← 20Hz 紧跟 Ctrl_OuterTick；Ctrl_EncService ← 5Hz；
+ *       Ctrl_PollKeyEvents ← 主循环每圈。 */
 
-static void Tof_Process(void) {
-	int16_t dist_mm = 0;
-	int8_t	rstat	= -1;
-	int8_t	out_st;
-
-	VL53L1X_Read(&dist_mm, &rstat);
-	out_st = rstat; /* 通信错误码 -1/-2 原样上报 */
-
-	if (rstat == 0) {
-		s_raw_mm = dist_mm;
-		if (!TofFilter_Update(&s_filter, dist_mm, rstat)) {
-			out_st = -3; /* 状态有效但原始值越界，滤波器拒绝 */
-		} else {
-			out_st = 0;
-		}
-		s_filt_mm	 = TofFilter_GetMm(&s_filter);
-		s_pos_cm_x10 = TofFilter_GetCmX10(&s_filter);
-		s_valid_cnt	 = TofFilter_GetValidCount(&s_filter);
-	} else {
-		s_raw_mm = 0; /* 通信失败帧不输出伪距离 */
-	}
-	s_range_st = out_st;
-
-	/* 有效帧占比：每帧实时结算（OLED 5Hz 直接显示），计数器每 5s 清零重计 */
-	s_win_total++;
-	if (out_st == 0) {
-		s_win_valid++;
-	}
-	if (s_win_total > 0) {
-		s_valid_pct = (uint8_t) ((s_win_valid * 100u + s_win_total / 2u) / s_win_total);
-	}
-	uint32_t now_ms = HAL_GetTick();
-	if ((uint32_t) (now_ms - s_win_t0) >= VALID_WIN_MS) {
-		s_win_t0	= now_ms;
-		s_win_total = 0;
-		s_win_valid = 0;
-	}
-
-	/* 外环与滤波同拍（20Hz）：pos 更新后立刻推进外环，避免 50Hz 重复吃旧数据 */
-	BallOuter_Tick();
-
-	/* VOFA FireWater（电机/编码器观测集；测距原始通道已移除，仅保留球位置）：
-	 * ch0=ctrl_mode, ch1=estop, ch2=enc_rel（内环反馈）,
-	 * ch3=hold_target（内环目标：模式2=外环偏移，其余 0）, ch4=hold_err,
-	 * ch5=hold_integral（×1000，Hz）, ch6=pulse_freq_hz（实际脉冲频率）,
-	 * ch7=enc_abs（绝对位置，限幅基准）, ch8=z_cnt, ch9=pos_cm_x10,
-	 * ch10=ball_ofs_cnt（外环输出）, ch11=motor_en（PA1 使能电平） */
-	int32_t enc_rel	  = Stepper_ReadEncoder();
-	int32_t hold_tgt  = (s_ctrl_mode == 2u) ? (int32_t) s_ball_ofs_cnt : 0;
-	int32_t vofa[12] = {
-		(int32_t) s_ctrl_mode,
-		(int32_t) s_key_estop,
-		enc_rel,
-		hold_tgt,
-		hold_tgt - enc_rel,
-		(int32_t) (s_hold_pid.integral * 1000.0f),
-		Stepper_GetPulseFreqHz(),
-		Stepper_ReadEncoderAbs(),
-		(int32_t) Stepper_GetZCount(),
-		(int32_t) s_pos_cm_x10,
-		(int32_t) s_ball_ofs_cnt,
-		(HAL_GPIO_ReadPin(Motor_enabled_GPIO_Port, Motor_enabled_Pin) == GPIO_PIN_SET) ? 1 : 0,
-	};
-	VOFA_SendFrame(vofa, 12);
-}
-
-/* ===================== 串口命令：A/Z/S/H/B/P/I/D/R ========================= */
-/* A<milli> : 设置 EMA 系数（20~1000，1000=直通）
- * Z        : 把当前滤波值设为零点；Z<mm> 显式设置零点距离
- * S<id>    : 设置测试段号（0~99，随 VOFA ch6 回传）
- * H / H1   : 平台保持——以当前编码器位置为零点锁定摆杆；H0 关闭并释放电机
- * B / B1   : 小球闭环——外环以 ToF 零点为目标控制小球到 O 点；B0 关闭并释放
- *            （B 与 H 互斥，同一电机任一时刻只挂一个环）
- * P/I/D<v> : 外环增益千分比在线整定（0~10000，如 P2500 = Kp 2.500）
- * R        : 清除滤波器窗口/EMA 与内外环积分（参数与零点保留） */
-static void TofCmd_ParseLine(const char *line) {
-	char  cmd;
-	char *end;
-	long  val	  = 0;
-	bool  has_val = false;
-
-	while (*line == ' ' || *line == '\t') {
-		line++;
-	}
-	cmd = *line;
-	if (cmd == '\0') {
-		return;
-	}
-
-	if (line[1] != '\0') {
-		val		= strtol(line + 1, &end, 10);
-		has_val = (end != (line + 1));
-	}
-
-	switch (cmd) {
-	case 'A':
-	case 'a':
-		if (has_val && val >= (long) TOF_FILTER_ALPHA_MIN_MILLI && val <= (long) TOF_FILTER_ALPHA_MAX_MILLI) {
-			TofFilter_SetAlpha(&s_filter, (uint16_t) val);
-		}
-		break;
-	case 'Z':
-	case 'z':
-		if (has_val) {
-			if (val >= 0 && val <= (long) TOF_FILTER_MAX_VALID_MM) {
-				TofFilter_SetZeroMm(&s_filter, (int16_t) val);
-			}
-		} else {
-			(void) TofFilter_ZeroHere(&s_filter);
-		}
-		break;
-	case 'S':
-	case 's':
-		if (has_val && val >= 0 && val <= 99) {
-			s_seg_id = (uint8_t) val;
-		}
-		break;
-	case 'H':
-	case 'h':
-		if (!has_val || val != 0) {
-			Loop_SetMode(1);
-		} else {
-			Loop_SetMode(0);
-		}
-		break;
-	case 'B':
-	case 'b':
-		if (!has_val || val != 0) {
-			Loop_SetMode(2);
-		} else {
-			Loop_SetMode(0);
-		}
-		break;
-	case 'P':
-	case 'p':
-		if (has_val && val >= 0 && val <= 10000) {
-			PID_SetGains(&s_ball_pid, (float) val / 1000.0f, s_ball_pid.ki, s_ball_pid.kd);
-		}
-		break;
-	case 'I':
-	case 'i':
-		if (has_val && val >= 0 && val <= 10000) {
-			PID_SetGains(&s_ball_pid, s_ball_pid.kp, (float) val / 1000.0f, s_ball_pid.kd);
-		}
-		break;
-	case 'D':
-	case 'd':
-		if (has_val && val >= 0 && val <= 10000) {
-			PID_SetGains(&s_ball_pid, s_ball_pid.kp, s_ball_pid.ki, (float) val / 1000.0f);
-		}
-		break;
-	case 'R':
-	case 'r':
-		TofFilter_Reset(&s_filter);
-		PID_Reset(&s_hold_pid);
-		PID_Reset(&s_ball_pid);
-		s_ball_ofs_cnt = 0;
-		s_tof_lost_n   = 0;
-		s_win_total = 0;
-		s_win_valid = 0;
-		s_win_t0	= HAL_GetTick();
-		s_valid_pct = 0;
-		break;
-	default:
-		break; /* 未知命令/EMI 噪声静默丢弃 */
-	}
-}
-
-static void TofCmd_Poll(void) {
-	char line[UART1_LINE_MAX];
-
-	USART1_EnsureRx(); /* RX 停摆自愈 */
-	while (USART1_GetLine(line, (uint8_t) sizeof line)) {
-		TofCmd_ParseLine(line);
-	}
-}
-
-/* ===================== 闭环控制：内环（编码器） + 外环（小球位置） ========= */
-/* 级联结构（项目知识笔记 §13 术语）：外环 20Hz，反馈 ToF pos（EMA 滤波后、
- * 相对零点，0 = O 点），输出摆杆角度目标偏移；内环 50Hz ISR，编码器位置环
- * 跟踪该偏移。模式 1（H）是外环断开、偏移恒 0 的退化形态，即平台保持。
- * 模式 2（B）使能外环，目标 = 外环输出。 */
-
-static void Loop_Init(void) {
-	Stepper_Init(); /* 校验 TIM2 PSC、启动 TIM3 编码器与 Z 相捕获；不使能电机 */
-	(void) Stepper_StoreRestore(); /* 恢复掉电前的编码器绝对位置（校验失败则为 0） */
-	PID_Init(&s_hold_pid, HOLD_PID_KP, HOLD_PID_KI, HOLD_PID_KD,
-			 -HOLD_OUT_LIMIT, HOLD_OUT_LIMIT, HOLD_PID_ILIM);
-	PID_SetDeadband(&s_hold_pid, HOLD_DEADBAND_CNT);
-	PID_Init(&s_ball_pid, BALL_PID_KP, BALL_PID_KI, BALL_PID_KD,
-			 -BALL_PID_OUT_LIM, BALL_PID_OUT_LIM, BALL_PID_ILIM);
-	PID_SetDeadband(&s_ball_pid, BALL_PID_DEADBAND_X10);
+/**
+ * @brief 初始化执行器/编码器/内外环，并按 PLATFORM_HOLD_ON_BOOT 进入上电模式
+ * @note  Motor_Init/Encoder_Init 只校验与启动外设，不使能电机、不输出脉冲
+ */
+static void Ctrl_Init(void) {
+	Motor_Init();				   /* 校验 TIM2 PSC；不使能电机、不输出脉冲 */
+	Encoder_Init();				   /* 启动 TIM3 编码器与 Z 相捕获 */
+	(void) Encoder_StoreRestore(); /* 恢复掉电前的绝对位置（校验失败则为 0） */
+	PID_InitFromCfg(&s_hold_pid, &s_hold_cfg);
+	PID_InitFromCfg(&s_ball_pid, &s_ball_cfg);
 	s_ctrl_mode	   = 0;
 	s_ball_ofs_cnt = 0;
 	s_tof_lost_n   = 0;
-	Stepper_SetTargetFreq(0);
-	Stepper_SetEnabled(false);
+	Motor_SetTargetFreq(0);
+	Motor_SetEnabled(false);
+
+#if PLATFORM_HOLD_ON_BOOT
+	Ctrl_SetMode(1);
+#endif
 }
 
-static void Loop_SetMode(uint8_t mode) {
-	/* 先停控制，再清零/复位，最后才置新模式，避免 ISR 在复位中途用旧状态 */
+/**
+ * @brief 切换控制模式：0=释放 1=平台保持 2=小球闭环
+ * @note  先停控制，再清零/复位，最后才置新模式，避免 ISR 在复位中途用旧状态；
+ *        当前仅 Ctrl_Init 按 PLATFORM_HOLD_ON_BOOT 进入模式 1，模式 2 无入口
+ *        （串口不再开放模式切换，保留供后续板载/硬件触发）
+ */
+static void Ctrl_SetMode(uint8_t mode) {
 	s_ctrl_mode = 0;
-	Stepper_SetTargetFreq(0);
+	Motor_SetTargetFreq(0);
 	if (mode == 0u) {
-		Stepper_StoreMarkDirty(); /* 停机：主循环在静止后把绝对位置落盘 */
-		Stepper_SetEnabled(false);
+		Encoder_StoreMarkDirty(); /* 停机：主循环在静止后把绝对位置落盘 */
+		Motor_SetEnabled(false);
 		return;
 	}
-	s_key_estop = 0; /* H1/B1 属显式启动，视为解除按键急停锁存 */
-	Stepper_EncoderZero(); /* 以当前摆杆角度为内环零点 */
-	PID_Reset(&s_hold_pid);
-	PID_Reset(&s_ball_pid);
-	s_ball_ofs_cnt = 0;
-	s_tof_lost_n   = 0;
-	Stepper_SetEnabled(true);
+	s_key_estop = 0;   /* 进入非 0 模式即解除按键急停锁存（当前仅上电初始化进入模式 1） */
+	Encoder_Zero();	   /* 以当前摆杆角度为内环零点 */
+	Ctrl_ResetLoops(); /* 内外环积分/目标偏移/失联计数统一复位 */
+#if MOTOR_CONTROL_ENABLE
+	Motor_SetEnabled(true);
+#endif
 	s_ctrl_mode = mode;
 }
 
-/* 外环（20Hz，主循环随 Tof_Process 调用）：pos_cm_x10 → 内环目标偏移。
- * 仅模式 2 且本帧 ToF 有效时推进；连续无效超阈值则复位并回中，防失联跑飞 */
-static void BallOuter_Tick(void) {
+/**
+ * @brief 外环 20Hz：pos_cm_x10 → 内环目标偏移
+ * @note  仅模式 2 且本帧 ToF 有效时推进；连续无效超阈值则复位并回中，防失联跑飞
+ */
+static void Ctrl_OuterTick(void) {
 	float out;
 
 	if (s_ctrl_mode != 2u) {
 		return;
 	}
-	if (s_range_st != 0) {
+	if (g_tof.range_status != 0) {
 		if (s_tof_lost_n < 255u) {
 			s_tof_lost_n++;
 		}
@@ -613,12 +458,15 @@ static void BallOuter_Tick(void) {
 	s_tof_lost_n = 0;
 
 	/* err = 0 - pos（PID 内部计算）；SIGN 吸收机械链路符号，见宏注释 */
-	out			 = BALL_PID_SIGN * PID_Update(&s_ball_pid, 0.0f, (float) s_pos_cm_x10);
+	out			   = BALL_PID_SIGN * PID_Update(&s_ball_pid, 0.0f, (float) g_tof.pos_cm_x10);
 	s_ball_ofs_cnt = (int16_t) out; /* PID 输出已限幅 ±BALL_PID_OUT_LIM(400)，不溢出 */
 }
 
-/* 内环（50Hz，TIM1 ISR）：编码器位置环，目标 = 外环偏移（模式1恒为0） */
-static void InnerLoop_Tick(void) {
+/**
+ * @brief 内环 50Hz（TIM1 ISR）：编码器位置环，目标 = 外环偏移（模式1恒为0）
+ * @note  ISR 上下文：只做一次 PID 计算与一次 TIM2 下发，不可阻塞
+ */
+static void Ctrl_InnerTick(void) {
 	int32_t fb;
 	float	target;
 	float	f_out;
@@ -627,120 +475,180 @@ static void InnerLoop_Tick(void) {
 		return;
 	}
 	target = (s_ctrl_mode == 2u) ? (float) s_ball_ofs_cnt : 0.0f;
-	fb	   = Stepper_ReadEncoder();
+	fb	   = Encoder_Read();
 	f_out  = PID_Update(&s_hold_pid, target, (float) fb);
-	Stepper_SetTargetFreq((int32_t) f_out);
+#if MOTOR_CONTROL_ENABLE
+	Motor_SetTargetFreq((int32_t) f_out);
+#else
+	(void) f_out; /* 总开关关闭：PID 照算便于观察积分/目标，但不驱动电机 */
+#endif
 }
 
-/* ===================== Z 相事件与掉电保存：5Hz 主循环服务 ================= */
-/* Flash 擦除/编程期间 CPU 从 Flash 取指停顿约 20~40ms，会打断 50Hz 控制环，
- * 因此只在模式 0（控制已停、电机休眠）且摆杆静止时才落盘。运行中直接掉电
- * 时保存值滞后到最后一次停机位置——这是"断电后杆保持不动"前提下的取舍。 */
-static int32_t s_store_abs_ref = 0;
-
-static void Enc_Service(void) {
+/**
+ * @brief Z 相事件与掉电保存服务（5Hz 主循环）
+ * @note  Flash 擦除/编程期间 CPU 从 Flash 取指停顿约 20~40ms，会打断 50Hz
+ *        控制环，因此只在模式 0（控制已停、电机休眠）且摆杆静止时才落盘。
+ *        运行中直接掉电时保存值滞后到最后一次停机位置——这是"断电后杆保持
+ *        不动"前提下的取舍。
+ */
+static void Ctrl_EncService(void) {
 	int32_t abs;
 
-	(void) Stepper_ReadEncoder(); /* 模式 0 时内环 ISR 不读编码器，由这里刷新计数 */
-	(void) Stepper_ProcessZ();	  /* Z 相：绝对计数对齐到最近整圈 */
+	(void) Encoder_Read();	   /* 模式 0 时内环 ISR 不读编码器，由这里刷新计数 */
+	(void) Encoder_ProcessZ(); /* Z 相：绝对计数对齐到最近整圈 */
 
 	if (s_ctrl_mode != 0u) {
-		s_store_abs_ref = Stepper_ReadEncoderAbs(); /* 控制中只跟踪，不擦 Flash */
+		s_store_abs_ref = Encoder_ReadAbs(); /* 控制中只跟踪，不擦 Flash */
 		return;
 	}
 
-	abs = Stepper_ReadEncoderAbs();
+	abs = Encoder_ReadAbs();
 	if (abs != s_store_abs_ref) {
 		s_store_abs_ref = abs; /* 仍在动：等静止后再存 */
 		return;
 	}
-	if (Stepper_StorePending()) {
-		(void) Stepper_StoreSave();
+	if (Encoder_StorePending()) {
+		(void) Encoder_StoreSave();
 	}
 }
 
-/* ===================== OLED：5Hz 局部刷新 ================================ */
-
-static void OLED_Refresh(void) {
-	int16_t pos		= s_pos_cm_x10;
-	char	sign	= (pos < 0) ? '-' : ' ';
-	int32_t abs_pos = (pos < 0) ? -(int32_t) pos : (int32_t) pos;
-
-	ssd1306_FillRectangle(0, 16, SSD1306_WIDTH - 1, 63, Black);
-	OLED_Print(0, 16, "RAW:%4d mm", (int) s_raw_mm);
-	OLED_Print(0, 24, "FLT:%4d mm", (int) s_filt_mm);
-	OLED_Print(0, 32, "POS:%c%ld.%ld cm", sign, (long) (abs_pos / 10), (long) (abs_pos % 10));
-	OLED_Print(0, 40, "ST:%d A:%d", (int) s_range_st, (int) TofFilter_GetAlphaMilli(&s_filter));
-	OLED_Print(0, 48, "V:%3lu%% M:%c S:%d", (unsigned long) s_valid_pct,
-			   (s_key_estop != 0u) ? 'E' : (char) ('0' + s_ctrl_mode), (int) s_seg_id);
-	OLED_Print(0, 56, "ENC:%6ld Z:%lu", (long) Stepper_ReadEncoderAbs(),
-			   (unsigned long) Stepper_GetZCount());
-	ssd1306_UpdateRect(0, 16, SSD1306_WIDTH, 48);
+/**
+ * @brief 20Hz VOFA FireWater 帧（通道定义见本文件 PD 枚举）
+ * @note  只送实时流变量；模式/急停/绝对位置/Z 计数/使能等低频状态量走 OLED
+ */
+static void Ctrl_SendTelemetry(void) {
+	int32_t hold_tgt		  = (s_ctrl_mode == 2u) ? (int32_t) s_ball_ofs_cnt : 0;
+	int32_t vofa[VOFA_CH_NUM] = {
+		[VOFA_CH_ENC_REL]		= Encoder_Read(),
+		[VOFA_CH_HOLD_TARGET]	= hold_tgt,
+		[VOFA_CH_HOLD_INTEGRAL] = (int32_t) (s_hold_pid.integral * 1000.0f),
+		[VOFA_CH_PULSE_FREQ]	= Motor_GetPulseFreqHz(),
+		[VOFA_CH_POS_CM_X10]	= (int32_t) g_tof.pos_cm_x10,
+		[VOFA_CH_BALL_OFS]		= (int32_t) s_ball_ofs_cnt,
+	};
+	VOFA_SendFrame(vofa, (uint8_t) VOFA_CH_NUM);
 }
 
-/* ===================== 按键 PA0：1ms 采样 + 15ms 消抖 ==================== */
-/* 入队（仅 ISR 调用）：队满时丢弃最新事件，保证已入队事件不被覆盖 */
-static void Key_QueuePush(uint8_t evt) {
-	uint8_t next = (uint8_t) ((s_key_q_head + 1u) % KEY_QUEUE_LEN);
+/**
+ * @brief 消费按键事件（非阻塞）：PRESS 急停锁存，再按一次解除并恢复驱动使能
+ * @note  锁存后仍为模式 0；再次按下只解除锁存并恢复驱动使能，不自动回到
+ *        模式 1（回到模式 1 需重新上电）；松手不自动恢复
+ */
+static void Ctrl_PollKeyEvents(void) {
+	KeyEvent_t ke;
 
-	if (next != s_key_q_tail) {
-		s_key_q[s_key_q_head] = evt;
-		s_key_q_head		  = next;
-	}
-}
-
-/* 1ms 节拍采样：全程只做电平计数与入队，不含延时/循环等待 */
-static void Key_Tick1ms(void) {
-	uint8_t raw = (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0) == GPIO_PIN_SET) ? 1u : 0u;
-
-	if (raw != s_key_stable) {
-		/* 抖动中：未连续稳定 KEY_DEBOUNCE_MS 不认账，直接返回 */
-		if (++s_key_diff_cnt < KEY_DEBOUNCE_MS) {
-			return;
-		}
-		s_key_diff_cnt = 0;
-		s_key_stable   = raw;
-
-		if (raw != 0u) { /* 确认按下：清时长，每次按压只发一次 PRESS */
-			s_key_hold_ms	= 0u;
-			s_key_long_sent = 0u;
-			Key_QueuePush(KEY_EVT_PRESS);
-		} else { /* 确认松开：先判是否已达长按，再决定是否补发单击 */
-			uint8_t was_long = s_key_long_sent;
-
-			s_key_hold_ms = 0u;
-			Key_QueuePush(KEY_EVT_RELEASE);
-			if (was_long == 0u) {
-				Key_QueuePush(KEY_EVT_CLICK);
+	while ((ke = Key_PollEvent()) != KEY_EVT_NONE) {
+		if (ke == KEY_EVT_PRESS) {
+			if (s_key_estop == 0u) {
+				s_key_estop = 1u;
+				Ctrl_SetMode(0);
+			} else {
+				s_key_estop = 0u;
+#if MOTOR_CONTROL_ENABLE
+				Motor_SetEnabled(true); /* 恢复力矩，杆锁在当前角度 */
+#endif
 			}
 		}
+	}
+}
+
+/** @brief R 命令：复位内外环积分与目标偏移（2 个调用点：模式切换、R 命令） */
+static void Ctrl_ResetLoops(void) {
+	PID_Reset(&s_hold_pid);
+	PID_Reset(&s_ball_pid);
+	s_ball_ofs_cnt = 0;
+	s_tof_lost_n   = 0;
+}
+
+/* ===================== 应用层：上位机行协议 ===============================
+ * A<milli> : 设置 EMA 系数（20~1000，1000=直通）
+ * Z        : 把当前滤波值设为零点；Z<mm> 显式设置零点距离
+ * P/I/D<v> : 外环增益千分比在线整定（0~10000，如 P2500 = Kp 2.500）
+ * R        : 清除滤波器窗口/EMA 与内外环积分（参数与零点保留）
+ *
+ * 上位机只做参数整定；控制模式不开放串口切换，由板载按键与
+ * PLATFORM_HOLD_ON_BOOT（上电进入模式 1）决定。
+ */
+
+/**
+ * @brief 解析并执行一条命令（未知命令/EMI 噪声静默丢弃）
+ * @param line 以 '\0' 结尾的单行文本（已去掉行尾）
+ */
+static void Cmd_ParseLine(const char *line) {
+	char  key;
+	char *end;
+	long  val	  = 0;
+	bool  has_val = false;
+
+	while (*line == ' ' || *line == '\t') {
+		line++;
+	}
+	if (*line == '\0') {
 		return;
 	}
+	/* 大小写归一：'a'~'z' 统一转大写，下面每个命令只写一遍分支 */
+	key = ((*line >= 'a') && (*line <= 'z')) ? (char) (*line - ('a' - 'A')) : *line;
 
-	s_key_diff_cnt = 0;
-	if ((s_key_stable != 0u) && (s_key_long_sent == 0u)) {
-		if (++s_key_hold_ms >= KEY_LONG_MS) {
-			s_key_long_sent = 1u; /* 长按只上报一次，持续按住不重复触发 */
-			Key_QueuePush(KEY_EVT_LONG);
+	if (line[1] != '\0') {
+		val		= strtol(line + 1, &end, 10);
+		has_val = (end != (line + 1));
+	}
+
+	switch (key) {
+	case 'A':
+		if (has_val && val >= (long) TOF_FILTER_ALPHA_MIN_MILLI && val <= (long) TOF_FILTER_ALPHA_MAX_MILLI) {
+			TofFilter_SetAlpha(&s_tof_filter, (uint16_t) val);
 		}
+		break;
+	case 'Z':
+		if (has_val) {
+			if (val >= 0 && val <= (long) TOF_FILTER_MAX_VALID_MM) {
+				TofFilter_SetZeroMm(&s_tof_filter, (int16_t) val);
+			}
+		} else {
+			(void) TofFilter_ZeroHere(&s_tof_filter);
+		}
+		break;
+	case 'P':
+	case 'I':
+	case 'D':
+		/* 三者格式一致：千分比 → 实数，只改对应单个增益 */
+		if (has_val && val >= 0 && val <= 10000) {
+			PIDGain_t gain = (key == 'P') ? PID_GAIN_KP : ((key == 'I') ? PID_GAIN_KI : PID_GAIN_KD);
+
+			PID_SetOneGain(&s_ball_pid, gain, (float) val / 1000.0f);
+		}
+		break;
+	case 'R':
+		TofFilter_Reset(&s_tof_filter);
+		Tof_ResetStats();
+		Ctrl_ResetLoops();
+		break;
+	default:
+		break; /* 未知命令/EMI 噪声静默丢弃 */
 	}
 }
 
-/* 主循环取事件（非阻塞）：无事件立即返回 KEY_EVT_NONE */
-static KeyEvent_t Key_PollEvent(void) {
-	uint8_t tail = s_key_q_tail;
-	uint8_t evt;
+/**
+ * @brief 10Hz 排空串口行队列（先自愈 RX，再逐行解析）
+ * @note  非阻塞；一次可处理队列中多条命令
+ */
+static void Cmd_Poll(void) {
+	char line[UART1_LINE_MAX];
 
-	if (tail == s_key_q_head) {
-		return KEY_EVT_NONE;
+	USART1_EnsureRx(); /* RX 停摆自愈 */
+	while (USART1_GetLine(line, (uint8_t) sizeof line)) {
+		Cmd_ParseLine(line);
 	}
-	evt			 = s_key_q[tail];
-	s_key_q_tail = (uint8_t) ((tail + 1u) % KEY_QUEUE_LEN);
-	return (KeyEvent_t) evt;
 }
 
-/* ===================== TIM1 1ms 节拍 ===================================== */
-/* 控制放 ISR 保证 50Hz；测距/滤波/VOFA/命令/OLED 放主循环，避免阻塞控制 */
+/**
+ * @brief TIM1 1ms 节拍：分频驱动内环/测距/命令/OLED 节拍，采样按键并按秒喂狗
+ * @param htim 触发回调的定时器（仅处理 TIM1，其它实例立即返回）
+ * @note  ISR 上下文：不可阻塞、不可调用持有外设锁的 HAL 接口；控制放 ISR 保证
+ *        50Hz，测距/滤波/VOFA/命令/OLED 只置标志由主循环执行；
+ *        喂狗条件：tick_ms 回到 0 且主循环心跳（s_loop_alive）正常
+ */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 	static uint16_t tick_ms = 0;
 
@@ -753,7 +661,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 	}
 
 	if ((tick_ms % CTRL_PERIOD_MS) == 0) {
-		InnerLoop_Tick();
+		Ctrl_InnerTick();
 	}
 	if ((tick_ms % MEAS_PERIOD_MS) == 0) {
 		s_meas_tick = 1;
@@ -777,10 +685,14 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 	}
 }
 
-/* Z 相（TIM3_CH3 = PB0）捕获回调：ISR 内只登记事件，对齐/落盘在主循环 Enc_Service */
+/**
+ * @brief Z 相（TIM3_CH3 = PB0）捕获回调：ISR 内只登记事件
+ * @param htim 触发回调的定时器（仅处理 TIM3）
+ * @note  ISR 上下文：O(1) 不可阻塞；对齐与落盘留给 5Hz Ctrl_EncService
+ */
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
 	if (htim->Instance == TIM3) {
-		Stepper_ZIndexEvent();
+		Encoder_ZIndexEvent();
 	}
 }
 

@@ -49,7 +49,7 @@ void VOFA_SendFrame(const int32_t *data, uint8_t ch_num);
 /* RX 行协议参数：命令行最大长度（含 NUL），取行缓冲须不小于该值 */
 #define UART1_LINE_MAX 32u
 /* 取走一条已完成的命令行（以 \r/\n 结尾的行）到 buf；无完成行返回 false。
- * 供 main.c 10Hz 命令解析调用（PidTuner_Poll） */
+ * 供 main.c 10Hz 命令轮询调用（Cmd_Poll） */
 bool USART1_GetLine(char *buf, uint8_t maxlen);
 /* RX 停摆自愈：接收态异常时解锁并重挂中断接收（10Hz 轮询调用） */
 void USART1_EnsureRx(void);

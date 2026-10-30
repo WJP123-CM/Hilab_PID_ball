@@ -44,47 +44,48 @@ typedef struct {
 } PID_t;
 
 /**
- * @brief  初始化 PID 控制器并复位运行态
- * @param  pid            : 控制器实例指针
- * @param  kp / ki / kd   : 三个环节的初始增益
- * @param  out_min/out_max: 输出限幅范围（须满足 out_min < out_max）
- * @param  integral_limit : 积分项限幅阈值（>0；抗积分饱和，按输出量纲取值，
- *                          建议不超过输出限幅绝对值）
+ * @brief  控制器配置（一次性初始化用）：把 7 个参数打包，避免长参数列表
+ *         在调用处重复书写与顺序错配；字段含义与 PID_t 同名成员一致
  */
-void PID_Init(PID_t *pid, float kp, float ki, float kd,
-			  float out_min, float out_max, float integral_limit);
+typedef struct {
+	float kp;	   /* 比例增益 */
+	float ki;	   /* 积分增益（按每采样步离散化） */
+	float kd;	   /* 微分增益 */
+	float out_min; /* 输出下限 */
+	float out_max; /* 输出上限 */
+	float i_limit; /* 积分项限幅阈值（>0，抗饱和） */
+	float deadband;/* 误差死区：|err| < deadband 按 0 处理；0 = 关闭 */
+	float d_alpha; /* 微分一阶低通系数 (0,1]：1 = 直通 */
+} PIDCfg_t;
+
+/** 在线整定时的单个增益选择 */
+typedef enum {
+	PID_GAIN_KP = 0,
+	PID_GAIN_KI,
+	PID_GAIN_KD,
+	PID_GAIN_CNT
+} PIDGain_t;
 
 /**
- * @brief  在线修改三个增益（预留：供上位机整定/工况切换调用）
- * @note   只改参数，不清运行态；需清历史请另调 PID_Reset()
+ * @brief  按配置结构初始化 PID 并复位运行态
+ * @param  pid : 控制器实例指针
+ * @param  cfg : 参数配置（指向常量表即可，本函数只读取）
+ * @note   deadband/d_alpha 就地校验：越界值按"关闭死区/微分直通"处理
  */
-void PID_SetGains(PID_t *pid, float kp, float ki, float kd);
+void PID_InitFromCfg(PID_t *pid, const PIDCfg_t *cfg);
 
 /**
- * @brief  在线修改输出限幅范围（须满足 out_min < out_max）
+ * @brief  在线修改单个增益（供上位机整定，只改参数不清运行态）
+ * @param  pid   : 控制器实例指针
+ * @param  gain  : PID_GAIN_KP / KI / KD，越界值忽略
+ * @param  value : 新增益（已按每采样步离散化）
  */
-void PID_SetOutputLimit(PID_t *pid, float out_min, float out_max);
-
-/**
- * @brief  在线修改积分项限幅阈值（>0）
- */
-void PID_SetIntegralLimit(PID_t *pid, float integral_limit);
-
-/**
- * @brief  设置误差死区（预留扩展）：|err| < deadband 时该拍误差按 0 处理；
- *         传入 0 表示关闭死区
- */
-void PID_SetDeadband(PID_t *pid, float deadband);
-
-/**
- * @brief  设置微分低通系数（预留扩展）：alpha ∈ (0,1]，越小滤波越强；
- *         传 1 表示关闭滤波（直通）
- */
-void PID_SetDerivativeFilter(PID_t *pid, float alpha);
+void PID_SetOneGain(PID_t *pid, PIDGain_t gain, float value);
 
 /**
  * @brief  复位运行态：积分清零、微分历史清零、首拍标志置位
- *         （切换工况/重新上电设定值时建议调用，避免旧积分拖累）
+ * @param  pid : 控制器实例指针
+ * @note   切换工况/重新上电设定值时调用，避免旧积分拖累
  */
 void PID_Reset(PID_t *pid);
 

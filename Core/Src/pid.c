@@ -14,50 +14,48 @@
 
 /* ===================== 初始化 / 配置接口 ================================== */
 
-void PID_Init(PID_t *pid, float kp, float ki, float kd,
-			  float out_min, float out_max, float integral_limit) {
-	pid->kp			= kp;
-	pid->ki			= ki;
-	pid->kd			= kd;
-	pid->out_min	= out_min;
-	pid->out_max	= out_max;
-	pid->i_limit	= integral_limit;
+/**
+ * @brief  按参数表初始化并复位运行态（参数表只读，越界项就地回退到安全值）
+ * @param  pid : 控制器实例； cfg : 增益/限幅/死区/微分滤波系数
+ */
+void PID_InitFromCfg(PID_t *pid, const PIDCfg_t *cfg) {
+	pid->kp		 = cfg->kp;
+	pid->ki		 = cfg->ki;
+	pid->kd		 = cfg->kd;
+	pid->out_min = cfg->out_min;
+	pid->out_max = cfg->out_max;
+	pid->i_limit = cfg->i_limit;
 
-	/* 预留扩展项默认关闭：死区 0、微分直通 */
-	pid->deadband	= 0.0f;
-	pid->d_alpha	= 1.0f;
+	/* 可选扩展项就地校验（越界 → 关闭死区 / 微分直通），不再转调独立 setter */
+	pid->deadband = (cfg->deadband > 0.0f) ? cfg->deadband : 0.0f;
+	pid->d_alpha  = ((cfg->d_alpha > 0.0f) && (cfg->d_alpha <= 1.0f)) ? cfg->d_alpha : 1.0f;
 
 	PID_Reset(pid);
 }
 
-void PID_SetGains(PID_t *pid, float kp, float ki, float kd) {
-	pid->kp = kp;
-	pid->ki = ki;
-	pid->kd = kd;
-}
-
-void PID_SetOutputLimit(PID_t *pid, float out_min, float out_max) {
-	pid->out_min = out_min;
-	pid->out_max = out_max;
-}
-
-void PID_SetIntegralLimit(PID_t *pid, float integral_limit) {
-	pid->i_limit = integral_limit;
-}
-
-void PID_SetDeadband(PID_t *pid, float deadband) {
-	pid->deadband = (deadband > 0.0f) ? deadband : 0.0f;
-}
-
-void PID_SetDerivativeFilter(PID_t *pid, float alpha) {
-	/* 有效范围 (0,1]：越界值一律按"直通"处理，避免滤波器发散 */
-	if ((alpha > 0.0f) && (alpha <= 1.0f)) {
-		pid->d_alpha = alpha;
-	} else {
-		pid->d_alpha = 1.0f;
+/**
+ * @brief  在线改单个增益（供上位机整定，不清运行态）
+ * @param  pid : 控制器实例； gain : KP/KI/KD； value : 新增益（每采样步离散化）
+ */
+void PID_SetOneGain(PID_t *pid, PIDGain_t gain, float value) {
+	switch (gain) {
+	case PID_GAIN_KP:
+		pid->kp = value;
+		break;
+	case PID_GAIN_KI:
+		pid->ki = value;
+		break;
+	case PID_GAIN_KD:
+		pid->kd = value;
+		break;
+	default:
+		break; /* 非法的增益选择：忽略，保持原参数 */
 	}
 }
 
+/**
+ * @brief  清积分/微分历史并置首拍标志（切换工况或重新使能时调用）
+ */
 void PID_Reset(PID_t *pid) {
 	pid->integral	= 0.0f;
 	pid->prev_err	= 0.0f;
@@ -67,6 +65,14 @@ void PID_Reset(PID_t *pid) {
 
 /* ===================== 单步计算 =========================================== */
 
+/**
+ * @brief  单步位置式 PID 计算
+ * @param  pid      : 控制器实例（内含运行态，不可并发调用）
+ * @param  setpoint : 设定值； feedback : 反馈量（与 setpoint 同量纲）
+ * @retval 限幅后的控制输出（out_min~out_max）
+ * @note   调用周期须与增益离散化时的采样周期一致（本工程内环 50Hz、外环 20Hz）；
+ *         首拍 D 项按 0 处理，无外部依赖、可主机侧单测
+ */
 float PID_Update(PID_t *pid, float setpoint, float feedback) {
 	float err = setpoint - feedback;
 	float d_raw;

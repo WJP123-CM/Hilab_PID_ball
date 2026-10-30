@@ -27,11 +27,15 @@
 
 static uint8_t uart1_rx_byte;
 
+/**
+ * @brief 启动 USART1 单字节中断接收（RX 链起点）
+ * @note  初始化阶段调用一次；每次接收完成后由回调自行重挂，形成连续 RX
+ */
 void USART1_StartRx(void) {
 	HAL_UART_Receive_IT(&huart1, &uart1_rx_byte, 1);
 }
 
-/* ---- RX 行组装：上位机命令行（PID 串口整定协议，解析在 main.c PidTuner） ----
+/* ---- RX 行组装：上位机命令行（PID 串口整定协议，解析在 main.c Cmd_ParseLine） ----
  * RX 中断逐字节接收，\r/\n 结束成行；完成行入 4 深度环形队列待主侧 10Hz 取走。
  * 噪声鲁棒：超长行截断（解析器因缺数字拒绝）；队列满时最新完成行丢弃。
  * （命令频率远低于 10Hz 轮询，正常不会发生；EMI 垃圾行被丢弃正是期望行为）。
@@ -44,6 +48,13 @@ static volatile uint8_t uart1_q_head = 0; /* 写入位置（生产者：RX ISR�
 static volatile uint8_t uart1_q_tail = 0; /* 取走位置（消费者：10Hz 轮询） */
 volatile uint32_t		uart1_rx_bytes	= 0; /* 诊断：RX ISR 收到的总字节数（VOFA ch6） */
 
+/**
+ * @brief RX 完成回调：逐字节组装命令行，遇 \r/\n 成行入 4 深环形队列
+ * @param huart 触发回调的串口句柄（仅处理 USART1，其它实例立即返回）
+ * @note  ISR 上下文：不可阻塞；队列满时丢弃最新完成行（命令频率远低于
+ *        10Hz 轮询，正常不发生）；超长行截断，断行会被解析器拒绝；
+ *        不回显，避免字符混入 VOFA FireWater 数据流
+ */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 	if (huart->Instance == USART1) {
 		char c = (char) uart1_rx_byte;
@@ -67,7 +78,12 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 	}
 }
 
-/* 取走一条完成行（无行返回 false）；buf 容量须 ≥ UART1_LINE_MAX */
+/**
+ * @brief 取走一条已完成的命令行（非阻塞）
+ * @param buf 输出缓冲，容量须 ≥ UART1_LINE_MAX；maxlen 缓冲长度（字节）
+ * @retval true = 取到一行（已 '\0' 结尾）；false = 当前无完成行
+ * @note  仅主循环调用（单消费者），10Hz 命令轮询取行后交 Cmd_ParseLine
+ */
 bool USART1_GetLine(char *buf, uint8_t maxlen) {
 	if (uart1_q_head == uart1_q_tail) {
 		return false;
@@ -84,6 +100,12 @@ bool USART1_GetLine(char *buf, uint8_t maxlen) {
 	return true;
 }
 
+/**
+ * @brief RX 错误回调：强制解锁并重挂中断接收
+ * @param huart 触发回调的串口句柄（仅处理 USART1）
+ * @note  F1 HAL 错误路径进入本回调时 huart->Lock 可能仍被持有，直接重挂
+ *        会因 HAL_BUSY 静默失败导致 RX 永久停摆，故先强制 Unlock/READY
+ */
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
 	if (huart->Instance == USART1) {
 		/* F1 HAL 已知问题：错误路径调用本回调时 huart->Lock 可能仍被持有，
@@ -95,8 +117,10 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
 	}
 }
 
-/* RX 通道自愈检查（10Hz 由 PidTuner_Poll 调用）：任何异常路径导致接收停摆
- * （ORE/FE/噪声触发后 HAL 未自动恢复）都在这里重新挂起接收 */
+/**
+ * @brief RX 通道自愈检查：接收态非 BUSY_RX 时解锁并重挂接收
+ * @note  10Hz 命令轮询调用；覆盖 ORE/FE/噪声触发后 HAL 未自动恢复的停摆
+ */
 void USART1_EnsureRx(void) {
 	if (huart1.RxState != HAL_UART_STATE_BUSY_RX) {
 		huart1.Lock		= HAL_UNLOCKED;
@@ -105,18 +129,25 @@ void USART1_EnsureRx(void) {
 	}
 }
 
-/* ---- 标准库输出重定向到 USART1 ----
- * GCC newlib 的 printf/puts/putchar 最终走 syscalls.c 中的弱符号 _write()
- * （默认转发给空的 __io_putchar，输出静默丢失）。这里用强符号覆盖 _write：
- * 配合 stdout 行缓冲，一行一次整段阻塞发送，传输高效。
- * fputc 供 putchar() 直连，并兼容 Keil(ARMCC) 工程移植（ARMCC 的 printf 逐字符回调 fputc）。
- * 注意：newlib-nano 不支持 %f，打印只能用 %d/%u/%x/%s。 */
+/**
+ * @brief newlib 标准输出重定向：强符号覆盖 syscalls.c 中的弱符号 _write
+ * @param file 未使用；ptr 数据首地址；len 字节数
+ * @retval 固定返回 len（声明本次全部输出成功）
+ * @note  阻塞式 HAL_UART_Transmit（最长 100ms）；仅主循环/非 ISR 使用；
+ *        与 VOFA 帧共用 USART1，勿在测距帧附近混用文本输出；newlib-nano 不支持 %f
+ */
 int _write(int file, char *ptr, int len) {
 	(void) file;
 	(void) HAL_UART_Transmit(&huart1, (uint8_t *) ptr, (uint16_t) len, 100);
 	return len;
 }
 
+/**
+ * @brief 逐字符输出（供 putchar 与 ARMCC printf 移植兼容）
+ * @param ch 待发送字符；f 未使用
+ * @retval 返回 ch
+ * @note  阻塞发送单字节；newlib-nano 不支持 %f
+ */
 int fputc(int ch, FILE *f) {
 	(void) f;
 	uint8_t b = (uint8_t) ch;
@@ -124,11 +155,13 @@ int fputc(int ch, FILE *f) {
 	return ch;
 }
 
-/* 寄存器级阻塞发送：不经 HAL，不持 huart 锁。
- * 关键原因：VOFA 帧在 TIM1 中断里每 20ms 发送一次（~5ms 忙），若走
- * HAL_UART_Transmit 会长时间持有 huart1->Lock，RX 回调内的重挂
- * HAL_UART_Receive_IT 会因锁返回 BUSY 且不使能 RXNE —— RX 随机死亡
- * （实测每行命令后必丢）。寄存器直发与 RX 路径零共享状态，彻底解耦 */
+/**
+ * @brief 寄存器级阻塞发送（不经 HAL、不持有 huart 锁）
+ * @param buf 数据首地址；len 字节数（VOFA 帧 ≤ 64，调用方保证）
+ * @note  ISR（20Hz TIM1 遥测）安全：若走 HAL_UART_Transmit，每 20ms 会长时间
+ *        持有 huart1->Lock，RX 重挂因锁返回 BUSY 且不使能 RXNE → RX 随机死亡；
+ *        寄存器直发与 RX 路径零共享状态；发送期间忙等 CPU（整帧约数 ms）
+ */
 static void uart_tx_poll(const uint8_t *buf, uint16_t len) {
 	USART1->CR1 |= USART_CR1_UE; /* 确保使能（初始化后恒为 1，防御性） */
 	for (uint16_t i = 0; i < len; i++) {
@@ -140,9 +173,13 @@ static void uart_tx_poll(const uint8_t *buf, uint16_t len) {
 	}
 }
 
-/* VOFA+ FireWater 协议：ch0,ch1,...,chN，数字逗号分隔，以 \n 结尾（文本格式）。
- * 通道用整数而非 float：newlib-nano 无 float 格式化，%.2f 会静默输出空串。
- * 测距循环里只能调用本函数，且不要再发其他文本，避免干扰 VOFA+ 的帧解析。 */
+/**
+ * @brief 发送 VOFA+ FireWater 文本帧：ch0,ch1,...,chN\n
+ * @param data 通道值数组（整数，按 VOFA_CH_* 顺序）；ch_num 通道数（本工程 6）
+ * @retval 无
+ * @note  通道用整数（newlib-nano 无 %f，%.2f 会输出空串）；仅 20Hz 主循环调用；
+ *        同一时刻不得再发其它文本，避免破坏 VOFA 帧解析
+ */
 void VOFA_SendFrame(const int32_t *data, uint8_t ch_num) {
 	char	msg[64];
 	char   *p = msg;
