@@ -33,7 +33,6 @@
 #include "tof_filter.h"	   /* 中值-5 + EMA 数字滤波器 */
 #include "stepper.h"	   /* 步进电机 / 编码器（平台保持用） */
 #include "pid.h"		   /* 平台位置保持 PID */
-#include "print.h"		   /* oled_print/serial_print 双通道打印（自检结果输出） */
 
 #include <stdio.h>
 #include <stdlib.h> /* strtol（串口参数解析） */
@@ -77,12 +76,10 @@
 /* ---- ToF 滤波与数据状态（主循环独占写，ISR/OLED 只读） ---- */
 static TofFilter_t s_filter;
 
-static volatile int16_t  s_raw_mm	   = 0;	 /* 本帧原始距离（mm），无效帧为 0 */
-static volatile int16_t  s_filt_mm	   = 0;	 /* 滤波后距离（mm） */
-static volatile int16_t  s_pos_cm_x10 = 0;	 /* 滤波后位置（0.1cm） */
-static volatile int8_t	 s_range_st	   = -1; /* 0=有效；-1/-2=通信；-3=滤波量程拒绝 */
-static volatile uint32_t s_valid_cnt   = 0;	 /* 滤波器累计有效帧 */
-static volatile uint8_t  s_seg_id	   = 0;	 /* 测试段号（S 命令） */
+static volatile int16_t  s_raw_mm	 = 0;	 /* 本帧原始距离（mm，未滤波），无效帧为 0 */
+static volatile int16_t  s_filt_mm	 = 0;	 /* 滤波后距离（mm），VOFA ch0 */
+static volatile uint32_t s_valid_cnt = 0;	 /* 滤波器累计有效帧 */
+static volatile int32_t  s_enc_cnt	 = 0;	 /* 编码器累计计数（TIM1 ISR 唯一刷新） */
 
 /* ---- 有效帧占比：每帧实时结算（随 OLED 5Hz 刷新），计数器 5s 清零 ---- */
 static volatile uint32_t s_win_total  = 0; /* 窗口内已处理帧数 */
@@ -318,13 +315,11 @@ static void Tof_Process(void) {
 			out_st = 0;
 		}
 		s_filt_mm	 = TofFilter_GetMm(&s_filter);
-		s_pos_cm_x10 = TofFilter_GetCmX10(&s_filter);
 		s_valid_cnt	 = TofFilter_GetValidCount(&s_filter);
 	} else {
 		s_raw_mm = 0; /* 通信失败帧不输出伪距离 */
 	}
-	s_range_st = out_st;
-
+	/* 状态码 out_st 仅内部参与有效帧统计，不上 OLED/串口 */
 	/* 有效帧占比：每帧实时结算（OLED 5Hz 直接显示），计数器每 5s 清零重计 */
 	s_win_total++;
 	if (out_st == 0) {
@@ -340,25 +335,19 @@ static void Tof_Process(void) {
 		s_win_valid = 0;
 	}
 
-	/* VOFA FireWater：ch0=raw_mm, ch1=filt_mm, ch2=pos_cm_x10,
-	 * ch3=status, ch4=valid_cnt, ch5=alpha_milli, ch6=seg, ch7=hold */
-	int32_t vofa[8] = {
-		(int32_t) s_raw_mm,
+	/* VOFA FireWater 三通道：ch0=滤波后距离(mm)，ch1=电机实际脉冲频率(Hz，
+	 * 带符号)，ch2=编码器累计计数。其余量一律不上传，避免波形通道混乱 */
+	int32_t vofa[3] = {
 		(int32_t) s_filt_mm,
-		(int32_t) s_pos_cm_x10,
-		(int32_t) s_range_st,
-		(int32_t) s_valid_cnt,
-		(int32_t) TofFilter_GetAlphaMilli(&s_filter),
-		(int32_t) s_seg_id,
-		(int32_t) s_ctrl_mode,
+		Stepper_GetPulseFreqHz(),
+		s_enc_cnt,
 	};
-	VOFA_SendFrame(vofa, 8);
+	VOFA_SendFrame(vofa, 3);
 }
 
-/* ===================== 串口命令：A/Z/S/H/R ================================ */
+/* ===================== 串口命令：A/Z/H/R ================================= */
 /* A<milli> : 设置 EMA 系数（20~1000，1000=直通）
  * Z        : 把当前滤波值设为零点；Z<mm> 显式设置零点距离
- * S<id>    : 设置测试段号（0~99，随 VOFA ch6 回传）
  * H / H1   : 平台保持——以当前编码器位置为零点锁定摆杆；H0 关闭并释放电机
  * R        : 清除滤波器窗口/EMA 与保持环积分（参数与零点保留） */
 static void TofCmd_ParseLine(const char *line) {
@@ -395,12 +384,6 @@ static void TofCmd_ParseLine(const char *line) {
 			}
 		} else {
 			(void) TofFilter_ZeroHere(&s_filter);
-		}
-		break;
-	case 'S':
-	case 's':
-		if (has_val && val >= 0 && val <= 99) {
-			s_seg_id = (uint8_t) val;
 		}
 		break;
 	case 'H':
@@ -462,32 +445,37 @@ static void Loop_SetMode(uint8_t mode) {
 	s_ctrl_mode = mode;
 }
 
-/* 保持环（50Hz，TIM1 ISR）：编码器位置环，目标恒为 H 命令标定的零点 */
+/* 保持环（50Hz，TIM1 ISR）：编码器位置环，目标恒为 H 命令标定的零点。
+ * 编码器累计计数在本 ISR 唯一刷新（Stepper_ReadEncoder 内部带状态累加，
+ * 若主循环也调用会与 ISR 争用累加变量导致丢计数） */
 static void InnerLoop_Tick(void) {
 	int32_t fb;
 	float	f_out;
 
+	fb		   = Stepper_ReadEncoder();
+	s_enc_cnt  = fb;
+
 	if (s_ctrl_mode == 0u) {
 		return;
 	}
-	fb	   = Stepper_ReadEncoder();
 	f_out  = PID_Update(&s_hold_pid, 0.0f, (float) fb);
 	Stepper_SetTargetFreq((int32_t) f_out);
 }
 
 /* ===================== OLED：5Hz 局部刷新 ================================ */
-
+/* 显示内容（按用户指定，不再显示状态码/段号/alpha/保持模式）：
+ *   y=0  标题；y=8  复位原因（上电时写一次，常驻）
+ *   y=16 瞬时未滤波距离；y=24 零点计算后距离；y=32 有效帧占比；y=40 编码器计数 */
 static void OLED_Refresh(void) {
-	int16_t pos		= s_pos_cm_x10;
-	char	sign	= (pos < 0) ? '-' : ' ';
-	int32_t abs_pos = (pos < 0) ? -(int32_t) pos : (int32_t) pos;
+	int32_t dz	   = (int32_t) s_filt_mm - (int32_t) TofFilter_GetZeroMm(&s_filter);
+	int32_t abs_dz = (dz < 0) ? -dz : dz;
+	char	dz_sign = (dz < 0) ? '-' : ' ';
 
 	ssd1306_FillRectangle(0, 16, SSD1306_WIDTH - 1, 55, Black);
 	OLED_Print(0, 16, "RAW:%4d mm", (int) s_raw_mm);
-	OLED_Print(0, 24, "FLT:%4d mm", (int) s_filt_mm);
-	OLED_Print(0, 32, "POS:%c%ld.%ld cm", sign, (long) (abs_pos / 10), (long) (abs_pos % 10));
-	OLED_Print(0, 40, "ST:%d A:%d", (int) s_range_st, (int) TofFilter_GetAlphaMilli(&s_filter));
-	OLED_Print(0, 48, "V:%3lu%% M:%d S:%d", (unsigned long) s_valid_pct, (int) s_ctrl_mode, (int) s_seg_id);
+	OLED_Print(0, 24, "DZ:%c%4ld mm", dz_sign, (long) abs_dz);
+	OLED_Print(0, 32, "VALID:%3lu%%", (unsigned long) s_valid_pct);
+	OLED_Print(0, 40, "ENC:%ld", (long) s_enc_cnt);
 	ssd1306_UpdateRect(0, 16, SSD1306_WIDTH, 40);
 }
 
