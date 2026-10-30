@@ -53,10 +53,10 @@ void Tof_GetDefaultSensorCfg(TofSensorCfg_t *cfg) {
 	if (cfg == 0) {
 		return;
 	}
-	cfg->roi_tl_x        = 2u;
-	cfg->roi_tl_y        = 13u;
-	cfg->roi_br_x        = 13u;
-	cfg->roi_br_y        = 2u;
+	cfg->roi_tl_x        = 4u;
+	cfg->roi_tl_y        = 11u;
+	cfg->roi_br_x        = 11u;
+	cfg->roi_br_y        = 4u;
 	cfg->distance_mode   = 0u;                          /* SHORT */
 	cfg->timing_budget_us = 16000u;                     /* 16ms */
 	cfg->inter_period_ms  = 20u;                        /* 20ms = 50Hz */
