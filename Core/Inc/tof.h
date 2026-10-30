@@ -66,15 +66,17 @@ void Tof_GetDefaultSensorCfg(TofSensorCfg_t *cfg);
 void Tof_GetRuntimeCfg(TofRuntimeCfg_t *cfg, const TofFilter_t *f);
 
 /* 测距状态快照：本模块唯一对外数据出口（只读；写仅发生在 tof.c 的 Tof_Tick
- * 与 Tof_InitSensor）。全部在 20Hz 主循环上下文读写，无 ISR 访问，故不加 volatile。 */
+ * 与 Tof_InitSensor）。pos_cm_x10 与 last_valid_ms 被 50Hz ISR 只读（≤32 位
+ * 对齐读在 Cortex-M3 上原子，安全）；其余字段仅 20Hz 主循环访问，故不加 volatile。 */
 typedef struct {
 	int16_t		 raw_mm;	   /* 本帧原始距离（mm），无效帧为 0 */
 	int16_t		 filt_mm;	   /* 滤波后距离（mm） */
 	int16_t		 pos_cm_x10;   /* 相对零点的位置（0.1cm） */
-	int8_t		 range_status; /* 0=有效；-1/-2=通信；-3=滤波量程拒绝 */
+	int8_t		 range_status; /* 0=有效；-1/-2=通信；-3=越出 [8,500]mm 量程门 */
 	uint8_t		 valid_pct;	   /* 最近窗口有效帧占比 0~100 */
 	uint16_t	 alpha_milli;  /* 当前 EMA 系数（千分比） */
 	const char	*last_step;	   /* 初始化失败步骤名；成功为 "OK" */
+	uint32_t	 last_valid_ms; /* 最后一个有效帧的 HAL_GetTick 时刻；闭环失效保护依据 */
 } TofState_t;
 
 extern TofState_t g_tof;

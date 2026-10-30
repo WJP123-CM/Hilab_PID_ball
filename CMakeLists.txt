@@ -55,7 +55,6 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/pid.c        # 单环位置式 PID
     # 应用层模块（无硬件）
     Core/Src/key.c        # PA0 按键消抖 + 事件队列
-    Core/Src/ctrl.c       # 级联闭环：内外环 PID + 模式 + 掉电保存 + VOFA + 急停
     Core/Src/cmd.c        # 上位机行协议：A/Z/P/I/D/R 命令解析
     # OLED (SSD1306) driver
     Middleware/OLED/ssd1306.c

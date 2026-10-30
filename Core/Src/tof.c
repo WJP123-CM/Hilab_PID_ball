@@ -181,8 +181,9 @@ TofState_t g_tof = {
 	.pos_cm_x10	  = 0,
 	.range_status = -1,
 	.valid_pct	  = 0,
-	.alpha_milli  = TOF_FILTER_ALPHA_DEFAULT_MILLI,
-	.last_step	  = "OK",
+	.alpha_milli   = TOF_FILTER_ALPHA_DEFAULT_MILLI,
+	.last_step	   = "OK",
+	.last_valid_ms = 0,
 };
 
 /* 滤波器实例：由应用层（Ctrl_Init 调 TofFilter_Init）初始化，cmd.c 在线调参，
@@ -213,10 +214,12 @@ void Tof_Tick(TofFilter_t *f) {
 
 	if (rstat == 0) {
 		g_tof.raw_mm = dist_mm;
+		/* 量程门 [8, 500]mm（2026-10-31 放宽）：越界帧拒绝并上报 -3 */
 		if (!TofFilter_Update(f, dist_mm, rstat)) {
 			out_st = -3; /* 状态有效但原始值越界，滤波器拒绝 */
 		} else {
-			out_st = 0;
+			out_st			  = 0;
+			g_tof.last_valid_ms = HAL_GetTick(); /* 有效帧时间戳：闭环失效保护依据 */
 		}
 		g_tof.filt_mm	 = f->last_filt_mm; /* 有效帧才写，无有效输出时保持 0 */
 		g_tof.pos_cm_x10 = TofFilter_GetCmX10(f);

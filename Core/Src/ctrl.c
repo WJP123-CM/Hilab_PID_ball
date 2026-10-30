@@ -35,7 +35,8 @@
 /* 符号链（2026-10-30，ENC_DIR_SIGN=+1 时推导）：
  *   freq>0 → enc↓；target>fb 需 freq<0 使 enc↑ → HOLD_PID_SIGN=-1
  *   pos>0 需 s_ball_ofs_cnt>0 → PID_Update(0,pos>0) 为负 → BALL_PID_SIGN=+1
- * 改符号必须四个宏（含 encoder.h 的 ENC_DIR_SIGN/ENC_POS_DIR_SIGN）同步。 */
+ * 改符号必须与 encoder.h 的 ENC_DIR_SIGN 同步（ENC_POS_DIR_SIGN 已于
+ * 2026-10-31 随 motor.c abs 软限位一并删除，限幅统一在 main.c ISR）。 */
 #define HOLD_PID_SIGN (-1)
 #define BALL_PID_SIGN (1)
 

@@ -35,8 +35,8 @@ extern "C" {
 /* 有效原始距离范围（mm）：Short 模式标称 0~250mm；工程有效测试点最近 3~5cm。
  * 10mm 仅作"明显异常值"门限，不代表 0~2cm 可用。运行时可通过
  * TofFilter_SetValidRange 覆盖，默认值取自下方宏。 */
-#define TOF_FILTER_MIN_VALID_MM 10
-#define TOF_FILTER_MAX_VALID_MM 250
+#define TOF_FILTER_MIN_VALID_MM 8
+#define TOF_FILTER_MAX_VALID_MM 500
 
 /* 位置符号：+1 = 小球远离传感器方向为正；传感器安装方向相反时改为 -1 */
 #define TOF_POS_SIGN (+1)

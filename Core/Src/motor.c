@@ -7,7 +7,6 @@
  */
 #include "motor.h"
 
-#include "encoder.h" /* Encoder_ReadAbs：软限幅判向 */
 #include "main.h"	 /* Motor_enabled / Motor_direction 引脚标签 */
 #include "tim.h"	 /* htim2 */
 
@@ -119,7 +118,7 @@ void Motor_SetEnabled(bool enable) {
  * @note  已运行时直接返回（HAL 对已运行通道再次 Start 会返回 BUSY）；
  *        HAL 失败进 Error_Handler
  */
-static void PwmStart(void) {
+void PwmStart(void) {
 	if (s_running) {
 		return;
 	}
@@ -133,7 +132,7 @@ static void PwmStart(void) {
  * @brief 停止 STEP 脉冲输出（幂等，绕组保持锁定）
  * @note  已停止时直接返回；HAL 失败进 Error_Handler
  */
-static void PwmStop(void) {
+void PwmStop(void) {
 	if (!s_running) {
 		return;
 	}
@@ -149,7 +148,7 @@ static void PwmStop(void) {
  * @note  先清 CNT 再写 ARR（ARPE=0 立即生效），防新 ARR < 当前 CNT 时计数器
  *        绕满 0xFFFF 才回绕产生超长脉冲间隔；占空比维持 ≈50%
  */
-static void PwmSetFreq(uint32_t freq_hz) {
+void PwmSetFreq(uint32_t freq_hz) {
 	uint32_t arr = (1000000u / freq_hz) - 1u;
 	__HAL_TIM_SET_COUNTER(&htim2, 0);
 	__HAL_TIM_SET_AUTORELOAD(&htim2, arr);
@@ -157,27 +156,15 @@ static void PwmSetFreq(uint32_t freq_hz) {
 }
 
 /**
- * @brief 下发目标频率：软限幅 → 状态机决策 → DIR/启停/PWM
+ * @brief 下发目标频率：状态机决策 → DIR/启停/PWM
  * @param freq_hz 目标脉冲频率（Hz，带符号，正 = CW）
- * @note  每 20ms 调用（TIM1 内环 ISR）；朝越界方向一律按 0 处理（停脉冲、
- *        绕组锁定），反向永远放行；换向拍只切 DIR 不发脉冲
+ * @note  每 20ms 调用（TIM1 内环 ISR）；换向拍只切 DIR 不发脉冲。
+ *        位置限幅由调用方（main.c ISR，相对计数基准 [-90,+60]）在下发前完成，
+ *        本函数不再做位置判断（2026-10-31 删除 abs 软限位：abs 基准来自
+ *        Flash 恢复值与相对计数不同步，曾导致单方向恒钳 0 卡死）
  */
 void Motor_SetTargetFreq(int32_t freq_hz) {
-	MotorCmd_t cmd;
-	int32_t	   pos_dir;
-	int32_t	   abs_pos;
-
-	/* 绝对位置软限位：仅在电机朝"越界方向"运动时切断。
-	 * 位置反馈由 Encoder_Read 每 20ms 更新，故限位响应延迟 ≤20ms。
-	 * 反向（退回区间内）永远放行，避免顶死在限位后无法退出 */
-	abs_pos	 = Encoder_ReadAbs();
-	pos_dir	 = (freq_hz > 0) ? ENC_POS_DIR_SIGN : ((freq_hz < 0) ? -ENC_POS_DIR_SIGN : 0);
-	if (((pos_dir > 0) && (abs_pos >= (int32_t) ENC_POS_LIM_MAX)) ||
-		((pos_dir < 0) && (abs_pos <= (int32_t) ENC_POS_LIM_MIN))) {
-		freq_hz = 0; /* 越界方向一律按"目标 0"处理：停脉冲、绕组保持锁定 */
-	}
-
-	cmd = MotorSm_Update(&s_sm, freq_hz);
+	MotorCmd_t cmd = MotorSm_Update(&s_sm, freq_hz);
 
 	if (cmd.dir_changed) {
 		/* 换向拍：只建立 DIR 电平不发脉冲（D36A 要求换向后 ≥1ms 再发脉冲，
@@ -205,4 +192,11 @@ void Motor_SetTargetFreq(int32_t freq_hz) {
  */
 int32_t Motor_GetPulseFreqHz(void) {
 	return s_sm.cur_freq; /* 斜率限制后的真实输出（带符号） */
+}
+
+/* ===================== 低层 PWM 原语（绕过 MotorSm 状态机） ============== */
+
+void Motor_SetDir(bool cw) {
+	HAL_GPIO_WritePin(Motor_direction_GPIO_Port, Motor_direction_Pin,
+					  (cw ? MOTOR_DIR_CW : MOTOR_DIR_CCW) ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }

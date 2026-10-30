@@ -8,13 +8,12 @@
  *   Z   相 PB0     = TIM3_CH3（输入捕获中断，每圈一个脉冲）
  *
  * 本模块是该硬件的"基本处理"收口：16 位 CNT 回绕累计、方向修正、相对清零、
- * 绝对计数 + Z 整圈校准、Flash 末页掉电保存，以及绝对位置软限幅的区间常量。
+ * 绝对计数 + Z 整圈校准、Flash 末页掉电保存（位置限幅在 main.c ISR）。
  * 电机脉冲/方向/使能在 motor.c；本模块不碰 TIM2 与电机 GPIO。
  *
- * 方向符号链（改任一处必须核对全部四处，否则软限幅判向反、内外环成正反馈）：
- *   ENC_DIR_SIGN     : A/B 原始增量 → 计数增量的符号（2026-10-30 统一为 +1 负相关）
- *   ENC_POS_DIR_SIGN : 绝对计数增大 ↔ 摆杆哪一侧（motor.c 软限幅判向用，须与
- *                      ENC_DIR_SIGN 取反使 freq>0 时 pos_dir 指向 enc 实际运动方向）
+ * 方向符号链（改任一处必须核对全部，否则限幅判向反、内外环成正反馈）：
+ *   ENC_DIR_SIGN     : A/B 原始增量 → 计数增量的符号（2026-10-30 统一为 +1 负相关，
+ *                      freq>0 → enc 减小；ISR 限幅判向直接据此硬编码，不再经宏）
  *   HOLD_PID_SIGN    : 内环 PID 输出 → 频率符号（main.c Ctrl_InnerTick，须使
  *                      target>fb 时 enc 朝 target 运动）
  *   BALL_PID_SIGN    : 外环输出 → 编码器目标偏移符号（main.c，须使 pos>0 时
@@ -43,17 +42,12 @@ extern "C" {
  * 本宏统一作用于相对计数与绝对计数；改回接线修正后可恢复 -1。 */
 #define ENC_DIR_SIGN (+1)
 
-/* ==================== 绝对位置软限幅区间 ==============================
- * 只在电机"朝超出限位区间外"的方向运动时切断 PWM；返回区间内的方向始终
- * 放行，避免顶死在限位后无法退回。判向逻辑在 Motor_SetTargetFreq。
- * 注意：依赖 ENC_DIR_SIGN 与 ENC_POS_DIR_SIGN 一致——若 enc 符号反了，
- * 越界判断方向随之反，限幅会完全失效（已实测过）。 */
-#define ENC_POS_LIM_MIN	  4400	 /* 允许的最小绝对计数 */
-#define ENC_POS_LIM_MAX	  4800	 /* 允许的最大绝对计数 */
-/* 2026-10-30：ENC_DIR_SIGN=+1 使 freq>0 → enc↓（绝对计数减小），
- * 故 freq>0 时 pos_dir 须为负（指向 MIN 方向）才能正确限幅。
- * 与 ENC_DIR_SIGN 取反：ENC_DIR_SIGN=+1 → ENC_POS_DIR_SIGN=-1。 */
-#define ENC_POS_DIR_SIGN  (-1) /* 绝对计数增大 ↔ 正转方向 */
+/* ==================== 位置限幅（已移至 main.c ISR） =====================
+ * 2026-10-31：MotorSm 侧的 abs 软限位已删除——abs 基准来自 Flash 恢复值，
+ * 与 Encoder_Read() 相对计数基准不同步，固定区间必然误触发钳死（实测：
+ * abs=15 时 freq>0 被判越界恒钳 0；abs=4600 旧值时反向恒钳 0）。
+ * 限位唯一实现点：main.c 50Hz ISR，基于相对计数 [-90, +60]，
+ * 判向约定：freq>0 = enc 减小方向，freq<0 = enc 增大方向（ENC_DIR_SIGN=+1）。 */
 
 /* ==================== 掉电保存（Flash 末页） ==========================
  * 程序用前 63 页，最后 1 页（0x0800FC00，链接脚本已减为 63K）专存绝对计数。
@@ -132,6 +126,13 @@ bool Encoder_StoreRestore(void);
  *        擦写期间 CPU 从 Flash 取指停顿约 20~40ms，会打断 50Hz 控制环
  */
 bool Encoder_StoreSave(void);
+
+/**
+ * @brief 以当前点为编码器零点：相对与绝对计数同时清零，并立即写入 Flash
+ * @retval true = Flash 写入成功；false = 擦写失败（RAM 零点仍生效）
+ * @note  仅主循环调用（串口 C 命令）；须在摆杆静止时执行（擦写停顿 20~40ms）
+ */
+bool Encoder_ZeroAbsAndSave(void);
 
 #ifdef __cplusplus
 }

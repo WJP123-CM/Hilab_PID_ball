@@ -9,9 +9,9 @@
  *       │
  *       ▼
  *  ┌─────────────┐   无效帧：输出保持上一有效值，不污染窗口
- *  │ 1. 有效性门限 │   条件：range_status != 0  →  丢弃（传感器报信号弱/超量程等）
- *  │  (状态+量程)  │        raw < min_valid_mm  →  丢弃（近距盲区）
- *  └──────┬──────┘        raw > max_valid_mm  →  丢弃（超量程）
+ *  │ 1. 有效性门限 │   条件：range_status != 0        →  丢弃（传感器报信号弱等）
+ *  │  (状态+量程)  │        raw ∉ [8, 500]mm          →  丢弃（近距盲区/超量程垃圾）
+ *  └──────┬──────┘
  *         │ 有效帧
  *         ▼
  *  ┌─────────────┐   窗口：循环缓冲 med_buf[N]，新值覆盖最旧值
@@ -44,9 +44,9 @@
  *   TOF_FILTER_ALPHA_DEFAULT/MIN/MAX_MILLI  (编译宏，限定上下限与默认值)
  *
  * 【有效距离门限】
- *   min_valid_mm / max_valid_mm  (运行时可调，默认 10 / 250 mm)
- *     原始距离越此范围的帧被视为无效并丢弃。Short 模式标称 0~250 mm；
- *     工程实测最近有效 3~5 cm，10 mm 仅作"明显异常值"门限。
+ *   min_valid_mm / max_valid_mm  (运行时可调，2026-10-31 定为 8 / 500 mm)
+ *     原始距离越此范围的帧被视为无效并丢弃（拒绝时 Tof_Tick 上报 -3）；
+ *     max_valid_mm 同时用于 TofFilter_SetZeroMm 的零点夹取。
  *
  * 【位置符号与零点】
  *   TOF_POS_SIGN  (编译宏，+1)
@@ -197,7 +197,7 @@ bool TofFilter_ZeroHere(TofFilter_t *f) {
 /**
  * @brief 推入一帧原始测距值并推进滤波链（中值-5 → EMA）
  * @param  raw_mm       原始距离（mm）；range_status 传感器状态（0 = 有效）
- * @retval true = 本帧有效并已更新输出；false = 被拒（状态非 0 或越界），输出保持
+ * @retval true = 本帧有效并已更新输出；false = 被拒（状态非 0），输出保持
  * @note   调用周期须与传感器帧率一致（本工程 20Hz）
  */
 bool TofFilter_Update(TofFilter_t *f, int16_t raw_mm, int8_t range_status) {
@@ -208,7 +208,8 @@ bool TofFilter_Update(TofFilter_t *f, int16_t raw_mm, int8_t range_status) {
 		return false;
 	}
 
-	/* 无效帧/越界值：不进入窗口，输出保持上一有效值 */
+	/* 无效帧/越界值：不进入窗口，输出保持上一有效值。
+	 * 2026-10-31 量程门放宽为 [8, 500]mm：只挡近距盲区读数与超量程垃圾值 */
 	if (range_status != 0) {
 		return false;
 	}
@@ -239,7 +240,8 @@ bool TofFilter_Update(TofFilter_t *f, int16_t raw_mm, int8_t range_status) {
 
 /**
  * @brief 相对零点的位置（0.1cm）
- * @retval (滤波值 - 零点) × TOF_POS_SIGN；无有效输出时为 0，饱和到 int16 范围
+ * @param f 滤波器实例
+ * @retval (零点值 - 滤波值) × TOF_POS_SIGN；无有效输出时为 0，饱和到 int16 范围
  */
 int16_t TofFilter_GetCmX10(const TofFilter_t *f) {
 	int32_t v;
@@ -247,7 +249,7 @@ int16_t TofFilter_GetCmX10(const TofFilter_t *f) {
 	if (f == 0 || !f->has_output) {
 		return 0;
 	}
-	v = ((int32_t) f->last_filt_mm - (int32_t) f->zero_mm) * TOF_POS_SIGN;
+	v = -((int32_t) f->last_filt_mm - (int32_t) f->zero_mm) * TOF_POS_SIGN;
 	if (v > 32767) {
 		v = 32767;
 	} else if (v < -32768) {

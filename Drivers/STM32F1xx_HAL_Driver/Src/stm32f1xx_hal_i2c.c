@@ -4831,40 +4831,37 @@ HAL_StatusTypeDef HAL_I2C_Master_Abort_IT(I2C_HandleTypeDef *hi2c, uint16_t DevA
   UNUSED(DevAddress);
 
   /* Abort Master transfer during Receive or Transmit process    */
-  if ((__HAL_I2C_GET_FLAG(hi2c, I2C_FLAG_BUSY) != RESET) && ((CurrentMode == HAL_I2C_MODE_MASTER) || 
-                                                             (CurrentMode == HAL_I2C_MODE_MEM)))
-  {
-    /* Process Locked */
-    __HAL_LOCK(hi2c);
+  if ((__HAL_I2C_GET_FLAG(hi2c, I2C_FLAG_BUSY) != RESET) &&
+	  ((CurrentMode == HAL_I2C_MODE_MASTER) || (CurrentMode == HAL_I2C_MODE_MEM))) {
+	  /* Process Locked */
+	  __HAL_LOCK(hi2c);
 
-    hi2c->PreviousState = I2C_STATE_NONE;
-    hi2c->State = HAL_I2C_STATE_ABORT;
+	  hi2c->PreviousState = I2C_STATE_NONE;
+	  hi2c->State		  = HAL_I2C_STATE_ABORT;
 
-    /* Disable Acknowledge */
-    CLEAR_BIT(hi2c->Instance->CR1, I2C_CR1_ACK);
+	  /* Disable Acknowledge */
+	  CLEAR_BIT(hi2c->Instance->CR1, I2C_CR1_ACK);
 
-    /* Generate Stop */
-    SET_BIT(hi2c->Instance->CR1, I2C_CR1_STOP);
+	  /* Generate Stop */
+	  SET_BIT(hi2c->Instance->CR1, I2C_CR1_STOP);
 
-    hi2c->XferCount = 0U;
+	  hi2c->XferCount = 0U;
 
-    /* Disable EVT, BUF and ERR interrupt */
-    __HAL_I2C_DISABLE_IT(hi2c, I2C_IT_EVT | I2C_IT_BUF | I2C_IT_ERR);
+	  /* Disable EVT, BUF and ERR interrupt */
+	  __HAL_I2C_DISABLE_IT(hi2c, I2C_IT_EVT | I2C_IT_BUF | I2C_IT_ERR);
 
-    /* Process Unlocked */
-    __HAL_UNLOCK(hi2c);
+	  /* Process Unlocked */
+	  __HAL_UNLOCK(hi2c);
 
-    /* Call the corresponding callback to inform upper layer of End of Transfer */
-    I2C_ITError(hi2c);
+	  /* Call the corresponding callback to inform upper layer of End of Transfer */
+	  I2C_ITError(hi2c);
 
-    return HAL_OK;
-  }
-  else
-  {
-    /* Wrong usage of abort function */
-    /* This function should be used only in case of abort monitored by master device */
-    /* Or periphal is not in busy state, mean there is no active sequence to be abort */
-    return HAL_ERROR;
+	  return HAL_OK;
+  } else {
+	  /* Wrong usage of abort function */
+	  /* This function should be used only in case of abort monitored by master device */
+	  /* Or periphal is not in busy state, mean there is no active sequence to be abort */
+	  return HAL_ERROR;
   }
 }
 
@@ -7666,4 +7663,3 @@ static void I2C_ConvertOtherXferOptions(I2C_HandleTypeDef *hi2c)
 /**
   * @}
   */
-

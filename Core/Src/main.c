@@ -18,16 +18,18 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+
+#include "gpio.h"
 #include "i2c.h"
 #include "iwdg.h"
+#include "motor.h"
 #include "tim.h"
 #include "usart.h"
-#include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "cmd.h"		/* 上位机行协议：A/Z/P/I/D/R */
-#include "ctrl.h"		/* 级联闭环：内外环 PID + 模式 + 掉电保存 + VOFA */
+/* ctrl.c 已禁用，用户自行在 main.c 编写控制逻辑 */
 #include "encoder.h"	/* 编码器计数/Z 校准/掉电保存 */
 #include "key.h"		/* PA0 按键消抖与事件队列 */
 #include "oled.h"		/* OLED 屏幕原语 */
@@ -43,9 +45,30 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-/* 调度周期与上电/电机宏已迁至 ctrl.h（CTRL_PERIOD_MS / PLATFORM_HOLD_ON_BOOT /
- * MOTOR_CONTROL_ENABLE 等），PID 参数与符号链也在 ctrl.c 内。本文件只保留
- * 调度标志（ISR 置位、主循环消费）。 */
+/* 调度周期：ctrl.c 已禁用，宏直接定义在此 */
+#define CTRL_PERIOD_MS 20u	/* 内环控制：50Hz（ISR 内执行） */
+#define MEAS_PERIOD_MS 50u	/* 测距/滤波：20Hz（主循环执行） */
+#define CMD_PERIOD_MS  100u /* 串口命令：10Hz（主循环执行） */
+#define OLED_PERIOD_MS 200u /* OLED 刷新：5Hz（主循环执行） */
+
+/* 电机使能：0=不驱动电机（脱机调参），1=正常输出 */
+#define MOTOR_CONTROL_ENABLE 1
+
+/* ---- 极简位置闭环参数（2026-10-31，50Hz ISR 执行）----
+ * P 控制：freq = Kp×pos，带符号频率（正=enc减小方向，负=enc增大方向），
+ * 近零点自动减速防超调；enc 朝限幅方向时钳 0，反向自动放行不卡死 */
+#define BAL_KP_FREQ_X10 4 /* 比例增益：Hz / 0.1cm 偏差（pos=30 即 3cm 时满速 120Hz） */
+#define BAL_FREQ_MAX_HZ                                                             \
+	120u					/* 输出频率限幅（Hz）；2026-10-31 实测 400Hz 严重失步 \
+							 * （freq=-400 持续 4s，enc 仅 40~47 抖动不走），120Hz 起步 */
+#define TEST_DEADBAND 3		/* pos 死区 ±0.3cm（pos 单位 0.1cm），防零点噪声换向抖动 */
+#define ENC_MIN_SOFT  (-90) /* enc 软限幅下限：到限禁止继续减小 */
+#define ENC_MAX_SOFT  60	/* enc 软限幅上限：到限禁止继续增大 */
+#define TOF_STALE_MS  250u /* 测距数据新鲜度门限（ms）：超过未见有效帧即降级为 \
+						    * 编码器回中闭环（冻结期间不丢控制权，防止旧 pos 推死限位） */
+#define CENTER_KP_HZ_PER_CNT 2 /* 冻结回中增益（Hz/计数）：freq=Kp×enc 驱动 enc 回 0， \
+							    * 方向与闭环同约定（freq>0=enc 减小）；MotorSm 30Hz 死区 \
+							    * 使 |enc|≤14 时停脉冲，杆停在回中点附近 ±1.3° */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -62,6 +85,9 @@ static volatile uint8_t s_cmd_tick   = 0; /* 串口命令解析 100ms */
 static volatile uint8_t s_oled_tick  = 0; /* OLED 刷新 200ms */
 /* 主循环心跳：1 = 最近 1s 内主循环至少跑过一圈；ISR 据此决定是否喂狗 */
 static volatile uint8_t s_loop_alive = 0;
+/* ---- 开环频率覆盖（cmd.c F 命令写，50Hz ISR 读；方向链钉死实验用） ---- */
+static volatile uint8_t s_openloop_en	= 0; /* 1 = 开环覆盖生效，0 = 位置闭环 */
+static volatile int32_t s_openloop_freq = 0; /* 开环目标频率（Hz，带符号，已限幅） */
 /* 控制状态（s_ctrl_mode/s_key_estop）与滤波器实例（g_tof_filter）已迁至
  * ctrl.c / tof.c，本文件通过 Ctrl_GetMode()/Ctrl_IsEstop()/g_tof_filter 访问。 */
 /* USER CODE END PV */
@@ -154,14 +180,20 @@ int main(void)
 	}
 	HAL_IWDG_Refresh(&hiwdg);
 
-	/* 滤波器与零点 + 执行器/编码器/内外环初始化（Motor_Init 只校验 TIM2 配置、
-	 * Encoder_Init 只启动编码器，两者都不使能电机、不输出脉冲；上电模式由
-	 * Ctrl_Init 按 PLATFORM_HOLD_ON_BOOT 决定） */
+	/* 滤波器与零点初始化 */
 	TofFilter_Init(&g_tof_filter, TOF_FILTER_ALPHA_DEFAULT_MILLI, TOF_FILTER_ZERO_DEFAULT_MM);
 	/* 硬件标定零点：2026-10-29 实测 60s/930帧 mean=131.4mm, σ=1.87mm——
 	 * 小球静止时 VL53L1X 原始距离的期望值；Z 命令可在线覆盖 */
 	TofFilter_SetZeroMm(&g_tof_filter, 131);
-	Ctrl_Init();
+
+	/* 执行器与编码器初始化：Motor_Init 只校验 TIM2 配置、Encoder_Init 启动编码器，
+	 * 两者都不使能电机、不输出脉冲；Encoder_StoreRestore 恢复掉电保存的绝对位置 */
+	Motor_Init();
+	Encoder_Init();
+	(void) Encoder_StoreRestore();
+#if MOTOR_CONTROL_ENABLE
+	Motor_SetEnabled(true); /* EN 引脚使能：绕组通电，极简闭环可直接发脉冲 */
+#endif
 	HAL_IWDG_Refresh(&hiwdg);
 
 	/* 接收上位机命令（A/Z/P/I/D/R）；VOFA 数据流仍只含数值，不混入文本 */
@@ -186,12 +218,20 @@ int main(void)
 		/* 主循环心跳：任何一步卡死超过 1 个 IWDG 周期都会停止喂狗并复位 */
 		s_loop_alive = 1;
 
-		/* 20Hz：测距/滤波/统计 → 外环 → VOFA。放主循环避免阻塞 50Hz 内环 */
+		/* 20Hz：测距/滤波/统计 → VOFA 遥测。控制逻辑由用户在此处自行编写 */
 		if (s_meas_tick) {
 			s_meas_tick = 0;
 			Tof_Tick(&g_tof_filter);
-			Ctrl_OuterTick();
-			Ctrl_SendTelemetry();
+
+			/* VOFA 遥测：ch0=filt_mm / ch1=pulse_freq_hz / ch2=enc_cnt */
+			{
+				int32_t vofa[3] = {
+					(int32_t) g_tof.filt_mm,
+					Motor_GetPulseFreqHz(),
+					Encoder_Read(),
+				};
+				VOFA_SendFrame(vofa, 3);
+			}
 		}
 
 		/* 10Hz 串口命令解析：一次可排空队列中的多条命令 */
@@ -200,22 +240,17 @@ int main(void)
 			Cmd_Poll();
 		}
 
-		/* 5Hz：先处理 Z 事件与掉电保存，再刷运行时页面 */
+		/* 5Hz：刷运行时页面 */
 		if (s_oled_tick) {
 			s_oled_tick = 0;
-			Ctrl_EncService();
 
-			/* 运行时页面：原始距离 / 零点校准后位置 / 有效帧占比 / 编码器绝对位置 / 控制模式 */
+			/* 运行时页面：原始距离 / 零点校准后位置 / 有效帧占比 / 编码器绝对位置 */
 			int16_t pos	  = g_tof.pos_cm_x10;
 			char	sign  = (pos < 0) ? '-' : ' ';
 			int32_t abs_pos = (pos < 0) ? -(int32_t) pos : (int32_t) pos;
-			uint8_t mode	  = Ctrl_GetMode();
-			const char *mode_str = (mode == 0u) ? "REL" : ((mode == 1u) ? "HOLD" : "BALL");
-			uint8_t mot_en;
+			uint8_t mot_en	= 0u;
 #if MOTOR_CONTROL_ENABLE
-			mot_en = (Ctrl_IsEstop() == 0u) ? 1u : 0u;
-#else
-			mot_en = 0u;
+			mot_en = 1u;
 #endif
 
 			OLED_ClearArea(0, 0, OLED_WIDTH, 64);
@@ -223,12 +258,12 @@ int main(void)
 			OLED_Print(0, 8,  "POS:%c%ld.%ld cm", sign, (long) (abs_pos / 10), (long) (abs_pos % 10));
 			OLED_Print(0, 16, "VAL:%3lu%%", (unsigned long) g_tof.valid_pct);
 			OLED_Print(0, 24, "ENC:%6ld", (long) Encoder_ReadAbs());
-			OLED_Print(0, 32, "MODE:%-4s M:%u", mode_str, (unsigned) mot_en);
+			OLED_Print(0, 32, "M:%u", (unsigned) mot_en);
 			OLED_Flush(0, 0, OLED_WIDTH, 40);
 		}
 
-		/* 按键事件消费（非阻塞）：急停锁存 / 解除锁存 */
-		Ctrl_PollKeyEvents();
+		/* 按键事件消费（非阻塞）：当前无 ctrl 模式管理，可在此处自行处理按键 */
+		/* Ctrl_PollKeyEvents(); 已禁用 */
 	}
   /* USER CODE END 3 */
 }
@@ -278,6 +313,22 @@ void SystemClock_Config(void)
  * 本文件只保留 HAL 回调（TIM1 分频调度 + TIM3 Z 相捕获）。 */
 
 /**
+ * @brief 开环频率覆盖入口（串口 F 命令）：进入/退出开环直驱模式
+ * @param freq_hz 带符号目标频率（Hz，内部钳到 ±BAL_FREQ_MAX_HZ）；0 = 退出回闭环
+ * @note  主循环上下文调用（cmd.c），50Hz ISR 读取；开环下 enc 限幅钳位仍生效，
+ *        借限位自限行程，专供方向链钉死实验（F60/F-60 看 enc 应减/增）
+ */
+void App_SetOpenloopFreq(int32_t freq_hz) {
+	if (freq_hz > (int32_t) BAL_FREQ_MAX_HZ) {
+		freq_hz = (int32_t) BAL_FREQ_MAX_HZ;
+	} else if (freq_hz < -(int32_t) BAL_FREQ_MAX_HZ) {
+		freq_hz = -(int32_t) BAL_FREQ_MAX_HZ;
+	}
+	s_openloop_freq = freq_hz;
+	s_openloop_en	= (freq_hz != 0) ? 1u : 0u;
+}
+
+/**
  * @brief TIM1 1ms 节拍：分频驱动内环/测距/命令/OLED 节拍，采样按键并按秒喂狗
  * @param htim 触发回调的定时器（仅处理 TIM1，其它实例立即返回）
  * @note  ISR 上下文：不可阻塞、不可调用持有外设锁的 HAL 接口；控制放 ISR 保证
@@ -296,7 +347,40 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 	}
 
 	if ((tick_ms % CTRL_PERIOD_MS) == 0) {
-		Ctrl_InnerTick();
+		/* ---- 极简位置闭环（50Hz）：P 控制，带符号频率 ----
+		 * freq>0=enc 减小方向，freq<0=enc 增大方向；MotorSm 内部处理换向安全 */
+		int32_t enc	 = Encoder_Read();
+		int32_t freq;
+
+		if (s_openloop_en) {
+			/* 开环频率覆盖（F 命令）：绕过位置反馈钉方向链，限幅钳位仍生效 */
+			freq = s_openloop_freq;
+		} else if ((uint32_t) (HAL_GetTick() - g_tof.last_valid_ms) > TOF_STALE_MS) {
+			/* 测距冻结降级为编码器回中闭环：ToF 被 EMI 冻结时 enc 反馈仍有效
+			 * （TIM3 本地计数不经 I2C），freq=Kp×enc 主动回中而非输出 0 干等，
+			 * 持续冻结下仍保有控制能力（旧"输出 0"策略等同卡死） */
+			freq = (int32_t) CENTER_KP_HZ_PER_CNT * enc;
+		} else {
+			int16_t pos = g_tof.pos_cm_x10;
+
+			freq = (int32_t) BAL_KP_FREQ_X10 * (int32_t) pos;
+			// if ((pos >= -TEST_DEADBAND) && (pos <= TEST_DEADBAND)) {
+			// 	freq = 0; /* 死区内 */
+			// }
+		}
+		/* 输出限幅：闭环与回中支路共用（开环频率在 App_SetOpenloopFreq 已钳） */
+		if (freq > (int32_t) BAL_FREQ_MAX_HZ) {
+			freq = (int32_t) BAL_FREQ_MAX_HZ;
+		} else if (freq < -(int32_t) BAL_FREQ_MAX_HZ) {
+			freq = -(int32_t) BAL_FREQ_MAX_HZ;
+		}
+		/* 位置限幅钳位（2026-10-31 恢复）：闭环/开环/回中共用；朝限幅方向钳 0，
+		 * 反向自动放行不卡死；F 命令测试时借它自限行程 */
+		if (((freq > 0) && (enc <= (int32_t) ENC_MIN_SOFT)) ||
+			((freq < 0) && (enc >= (int32_t) ENC_MAX_SOFT))) {
+			freq = 0;
+		}
+		Motor_SetTargetFreq(freq);
 	}
 	if ((tick_ms % MEAS_PERIOD_MS) == 0) {
 		s_meas_tick = 1;

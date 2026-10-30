@@ -9,8 +9,8 @@
  *   EN   使能  PA1（Motor_enabled_Pin，推挽输出，D36A 高电平使能）
  *
  * 本模块只负责电机：频率限幅 / 死区 / 斜率限制 / 换向安全 + PWM 与 GPIO 下发。
- * 编码器计数、Z 校准、掉电保存、软限幅区间常量都在 encoder.c；这里只消费
- * Encoder_ReadAbs() 的位置读数做软限幅判向。
+ * 位置限幅不在本模块：由调用方（main.c ISR）按相对计数基准在下发前钳 0，
+ * 编码器计数、Z 校准、掉电保存都在 encoder.c。
  *
  * D36A 控制时序：EN 高电平使能、低电平休眠（上电默认休眠，安全）；
  * 换向后须 ≥1ms 再发 STEP 脉冲（本模块换向拍只切 DIR 不发脉冲）；
@@ -34,12 +34,12 @@ extern "C" {
 
 /* 频率限幅（Hz）：|freq| < MIN 视为停止（脉冲过疏只会引起抖动）；
  * MAX 按电机矩频特性约束（1kHz≈18.75rpm，2kHz≈37.5rpm） */
-#define MOTOR_FREQ_MIN_HZ 30	 /* 30Hz 最小频率 */
+#define MOTOR_FREQ_MIN_HZ 0	   /* 0Hz 最小频率 */
 #define MOTOR_FREQ_MAX_HZ 2000 /* 2kHz 最大频率 */
 
 /* 斜率限制：每拍频率变化量上限（Hz/拍）。50Hz 调用下 100Hz/拍 = 5kHz/s²，
  * 频率平滑渐变是防失步的核心——步进电机对频率阶跃敏感 */
-#define MOTOR_SLEW_HZ_PER_STEP 100 /* 100Hz/拍 最大频率变化量 */
+#define MOTOR_SLEW_HZ_PER_STEP 10 /* 100Hz/拍 最大频率变化量 */
 
 /* 方向电平定义：正转/反转 到 PA2 的实际电平。
  * 历史记录（2026-10-27）：多次对调后仍出现"固件未动、方向再次反转"的间歇现象，
@@ -89,7 +89,7 @@ MotorCmd_t MotorSm_Update(MotorSm_t *sm, int32_t target_hz);
 
 /**
  * @brief 初始化电机侧：校验 TIM2 分频配置、设定 STEP 占空比（约 50%）
- * @note  须在 MX_TIM2_Init 之后调用一次；不启动脉冲、不使能电机（上电安全态）
+ * @note  须在 MX_TIM2_Init
  * @note  编码器不在本函数初始化（见 Encoder_Init）
  */
 void Motor_Init(void);
@@ -104,7 +104,7 @@ void Motor_SetEnabled(bool enable);
  * @brief 设定带符号目标频率（Hz），以固定周期调用（本工程 50Hz）
  * @param freq_hz >0 正转；<0 反转；0 停止脉冲
  * @note  脉冲启停、方向切换、ARR 更新均由本函数按 MotorSm 决策自动完成；
- *        绝对位置越界方向会先被软限幅钳为 0（响应延迟 ≤ 一次编码器读数刷新）
+ *        位置限幅由调用方在下发前完成（本函数不做位置判断）
  */
 void Motor_SetTargetFreq(int32_t freq_hz);
 
@@ -113,6 +113,25 @@ void Motor_SetTargetFreq(int32_t freq_hz);
  * @retval 经斜率限制后的真实输出；加减速/换向过程中与目标值不同
  */
 int32_t Motor_GetPulseFreqHz(void);
+
+/* ===================== 低层 PWM 原语（绕过状态机，直接操控 TIM2） ==========
+ * 供需要最简控制逻辑的场景使用：测距→频率 直接映射，不经斜率/换向状态机。
+ * 注意：调用方需自行处理方向、启停顺序与频率限幅（≥ MOTOR_FREQ_MIN_HZ）。 */
+
+/** @brief 设定 STEP 脉冲频率（Hz，≥ MOTOR_FREQ_MIN_HZ），占空比 ≈50% */
+void PwmSetFreq(uint32_t freq_hz);
+
+/** @brief 启动 STEP 脉冲输出（幂等） */
+void PwmStart(void);
+
+/** @brief 停止 STEP 脉冲输出（幂等，绕组保持锁定） */
+void PwmStop(void);
+
+/**
+ * @brief 设定 DIR 方向电平
+ * @param cw true = 正转（MOTOR_DIR_CW），false = 反转（MOTOR_DIR_CCW）
+ */
+void Motor_SetDir(bool cw);
 
 #ifdef __cplusplus
 }

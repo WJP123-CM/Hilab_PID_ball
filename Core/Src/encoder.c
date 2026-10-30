@@ -228,3 +228,19 @@ bool Encoder_StoreSave(void) {
 	s_store_dirty = false; /* 失败不重试：避免主循环被反复擦写阻塞 */
 	return ok == HAL_OK;
 }
+
+/**
+ * @brief 以当前点为编码器零点：相对与绝对计数同时清零，并立即写入 Flash
+ * @retval true = Flash 写入成功；false = 擦写失败（RAM 零点仍生效）
+ * @note  主循环调用（串口 C 命令）；Flash 擦写停顿 20~40ms，须在摆杆静止时执行
+ */
+bool Encoder_ZeroAbsAndSave(void) {
+	uint32_t pm = __get_PRIMASK();
+	__disable_irq();
+	s_enc_total = 0;
+	s_enc_abs	= 0;
+	s_enc_last	= (uint16_t) __HAL_TIM_GET_COUNTER(&htim3);
+	__set_PRIMASK(pm);
+	s_store_dirty = true;
+	return Encoder_StoreSave();
+}
