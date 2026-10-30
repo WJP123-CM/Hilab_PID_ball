@@ -77,6 +77,16 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Middleware/VL53L1X/core/src/vl53l1_wait.c
 )
 
+# VL53L1X ULD 头文件自带的 PALDevDataGet/PALDevDataSet 改名提示以 -Wcpp 形式在每次构建输出，
+# 并常驻 IDE Problems 面板（对使用方没有行动价值），故仅对 VL53 中间件源文件关闭 -Wcpp；
+# 用户代码仍保留该警告（例如自建 #warning 提醒不会因此被吞掉）。
+get_target_property(HILAB_TARGET_SOURCES ${CMAKE_PROJECT_NAME} SOURCES)
+foreach(src IN LISTS HILAB_TARGET_SOURCES)
+    if(src MATCHES "Middleware/VL53L1X")
+        set_source_files_properties(${src} PROPERTIES COMPILE_OPTIONS "-Wno-cpp")
+    endif()
+endforeach()
+
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths

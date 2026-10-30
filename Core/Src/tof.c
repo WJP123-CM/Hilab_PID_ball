@@ -13,7 +13,12 @@
 #include "iwdg.h"	  /* hiwdg：初始化各步骤之间喂狗，避免累计阻塞触发 IWDG */
 #include "main.h"	  /* HAL_Delay / HAL_GetTick / GPIO_InitTypeDef */
 #include "tof_filter.h"
+/* VL53L1X ULD 头文件内含 PALDevDataGet/PALDevDataSet 的改名 #warning（-Wcpp），
+ * 对使用方无行动价值且会常驻 IDE 诊断面板，仅在包含处屏蔽 */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcpp"
 #include "vl53l1_api.h"
+#pragma GCC diagnostic pop
 #include "vl53l1_platform_stm32.h"
 
 /* 有效帧占比统计周期：5s（非刷新周期） */
