@@ -13,7 +13,7 @@
     // ===================== clangd 语言服务 =====================
     // 仅开启基础能力，不启用 clang-tidy 和 query-driver（稳定后逐步添加）
     "clangd.arguments": [
-        "--compile-commands-dir=${workspaceFolder}/build/Debug", // 编译数据库路径
+        "--compile-commands-dir=${workspaceFolder}/build/Release", // 编译数据库路径（Release 为实际验证口径；Debug 在主树曾溢出，不宜作诊断基准）
         "--background-index", // 后台持续建索引
         "--header-insertion=iwyu", // 按 IWYU 风格补全头文件
         "--completion-style=detailed", // 补全显示详细信息
