@@ -5,6 +5,7 @@
  *
  *          处理顺序：读一帧原始距离/状态 → 状态与量程门限 → 5 点中值
  *          → 一阶 EMA → 零点换算（0.1cm）→ 有效帧占比统计。
+
  ******************************************************************************
  */
 #include "tof.h"
@@ -52,10 +53,10 @@ void Tof_GetDefaultSensorCfg(TofSensorCfg_t *cfg) {
 	if (cfg == 0) {
 		return;
 	}
-	cfg->roi_tl_x        = 4u;
-	cfg->roi_tl_y        = 11u;
-	cfg->roi_br_x        = 11u;
-	cfg->roi_br_y        = 4u;
+	cfg->roi_tl_x        = 2u;
+	cfg->roi_tl_y        = 13u;
+	cfg->roi_br_x        = 13u;
+	cfg->roi_br_y        = 2u;
 	cfg->distance_mode   = 0u;                          /* SHORT */
 	cfg->timing_budget_us = 16000u;                     /* 16ms */
 	cfg->inter_period_ms  = 20u;                        /* 20ms = 50Hz */
@@ -278,10 +279,10 @@ void Tof_SetRuntimeCfg(const TofRuntimeCfg_t *cfg, TofFilter_t *f) {
 		TofFilter_SetZeroMm(f, cfg->zero_mm);
 	}
 	if (cfg->min_valid_mm != 0 || cfg->max_valid_mm != 0) {
-		TofFilter_SetValidRange(f, cfg->min_valid_mm, cfg->max_valid_mm);
+		TofFilter_SetValidRange(f, cfg->min_valid_mm, cfg->max_valid_mm); // 有效距离门限
 	}
 	if (cfg->valid_window_ms != 0u) {
-		s_valid_win_ms = cfg->valid_window_ms;
+		s_valid_win_ms = cfg->valid_window_ms; // 有效帧占比统计窗口（ms）
 		/* 改窗口后立即重置统计，避免旧窗口数据污染 */
 		Tof_ResetStats();
 	}
