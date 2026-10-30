@@ -185,6 +185,10 @@ TofState_t g_tof = {
 	.last_step	  = "OK",
 };
 
+/* 滤波器实例：由应用层（Ctrl_Init 调 TofFilter_Init）初始化，cmd.c 在线调参，
+ * Tof_Tick 每帧推进。与 g_tof 同属 tof 模块对外状态。 */
+TofFilter_t g_tof_filter;
+
 /* ---- 有效帧占比：每帧实时结算（随 OLED 5Hz 刷新），计数器 5s 清零 ---- */
 static volatile uint32_t s_win_total  = 0; /* 窗口内已处理帧数 */
 static volatile uint32_t s_win_valid  = 0; /* 窗口内有效帧数（out_st==0） */

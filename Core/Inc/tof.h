@@ -79,6 +79,9 @@ typedef struct {
 
 extern TofState_t g_tof;
 
+/* 滤波器实例：应用层命令（A/Z/R）与控制层共用，统一由 tof 模块持有 */
+extern TofFilter_t g_tof_filter;
+
 /**
  * @brief 传感器初始化并启动连续测量（内部阻塞 ~数百 ms，分步喂狗）
  * @param cfg 传感器测距参数（传 NULL 则用默认配置）
