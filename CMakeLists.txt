@@ -57,7 +57,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Standard single-loop positional PID controller (reusable, no external deps)
     Core/Src/pid.c
     # Basic Kalman filter observer (2D CV model: encoder + ranger fusion)
-    Core/Src/kalman.c
+    # Core/Src/kalman.c  /* 2026-10-30 下线：实测静态 K₀≈0.8 直通，优于 EMA 的平滑度未兑现，文件保留待重新标定后启用 */
     # OLED (SSD1306) driver
     Middleware/OLED/ssd1306.c
     Middleware/OLED/ssd1306_fonts.c
