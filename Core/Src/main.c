@@ -92,7 +92,7 @@
  * 注意：EN 只管电机功率级（H 桥输出），不是驱动板电源开关——驱动板仍上电，
  *       对最小系统板的供电不受影响。关掉后测距/滤波/编码器/串口整定照常运行，
  *       用于脱机调传感器与增益 */
-#define MOTOR_CONTROL_ENABLE 0
+#define MOTOR_CONTROL_ENABLE 1
 
 /* ================= VOFA 串口帧通道定义（唯一权威表） =================
  * 串口只送 3 项实时数据：滤波距离、脉冲频率、编码器计数；
@@ -315,17 +315,26 @@ int main(void)
 			s_oled_tick = 0;
 			Ctrl_EncService();
 
-			/* 运行时页面：原始距离 / 零点校准后位置 / 有效帧占比 / 编码器绝对位置 */
+			/* 运行时页面：原始距离 / 零点校准后位置 / 有效帧占比 / 编码器绝对位置 / 控制模式 */
 			int16_t pos	  = g_tof.pos_cm_x10;
 			char	sign  = (pos < 0) ? '-' : ' ';
 			int32_t abs_pos = (pos < 0) ? -(int32_t) pos : (int32_t) pos;
+			uint8_t mode	  = s_ctrl_mode;
+			const char *mode_str = (mode == 0u) ? "REL" : ((mode == 1u) ? "HOLD" : "BALL");
+			uint8_t mot_en;
+#if MOTOR_CONTROL_ENABLE
+			mot_en = (s_key_estop == 0u) ? 1u : 0u;
+#else
+			mot_en = 0u;
+#endif
 
 			OLED_ClearArea(0, 0, OLED_WIDTH, 64);
 			OLED_Print(0, 0,  "RAW:%4d mm", (int) g_tof.raw_mm);
 			OLED_Print(0, 8,  "POS:%c%ld.%ld cm", sign, (long) (abs_pos / 10), (long) (abs_pos % 10));
 			OLED_Print(0, 16, "VAL:%3lu%%", (unsigned long) g_tof.valid_pct);
 			OLED_Print(0, 24, "ENC:%6ld", (long) Encoder_ReadAbs());
-			OLED_Flush(0, 0, OLED_WIDTH, 32);
+			OLED_Print(0, 32, "MODE:%-4s M:%u", mode_str, (unsigned) mot_en);
+			OLED_Flush(0, 0, OLED_WIDTH, 40);
 		}
 
 		/* 按键事件消费（非阻塞）：急停锁存 / 解除锁存 */
@@ -392,16 +401,16 @@ static void Ctrl_Init(void) {
 	Motor_Init();				   /* 校验 TIM2 PSC；不使能电机、不输出脉冲 */
 	Encoder_Init();				   /* 启动 TIM3 编码器与 Z 相捕获 */
 	(void) Encoder_StoreRestore(); /* 恢复掉电前的绝对位置（校验失败则为 0） */
-	PID_InitFromCfg(&s_hold_pid, &s_hold_cfg);
-	PID_InitFromCfg(&s_ball_pid, &s_ball_cfg);
-	s_ctrl_mode	   = 0;
-	s_ball_ofs_cnt = 0;
-	s_tof_lost_n   = 0;
-	Motor_SetTargetFreq(0);
-	Motor_SetEnabled(false);
+	PID_InitFromCfg(&s_hold_pid, &s_hold_cfg); // 初始化平台保持环
+	PID_InitFromCfg(&s_ball_pid, &s_ball_cfg); // 初始化小球闭环环
+	s_ctrl_mode	   = 0;						   // 初始化控制模式为释放
+	s_ball_ofs_cnt = 0;						   // 初始化小球闭环环目标偏移计数为 0
+	s_tof_lost_n   = 0;						   // 初始化 ToF 失联计数为 0
+	Motor_SetTargetFreq(0);					   // 初始化电机目标频率为 0
+	Motor_SetEnabled(false);				   // 初始化电机为禁用状态
 
 #if PLATFORM_HOLD_ON_BOOT
-	Ctrl_SetMode(1);
+	Ctrl_SetMode(1); // 初始化进入平台保持模式
 #endif
 }
 
@@ -412,18 +421,18 @@ static void Ctrl_Init(void) {
  *        （串口不再开放模式切换，保留供后续板载/硬件触发）
  */
 static void Ctrl_SetMode(uint8_t mode) {
-	s_ctrl_mode = 0;
-	Motor_SetTargetFreq(0);
-	if (mode == 0u) {
+	s_ctrl_mode = 0;			  // 初始化控制模式为释放
+	Motor_SetTargetFreq(0);		  // 初始化电机目标频率为 0
+	if (mode == 0u) {			  // 如果是释放模式，直接返回，不处理
 		Encoder_StoreMarkDirty(); /* 停机：主循环在静止后把绝对位置落盘 */
-		Motor_SetEnabled(false);
+		Motor_SetEnabled(false);  // 初始化电机为禁用状态
 		return;
 	}
 	s_key_estop = 0;   /* 进入非 0 模式即解除按键急停锁存（当前仅上电初始化进入模式 1） */
 	Encoder_Zero();	   /* 以当前摆杆角度为内环零点 */
-	Ctrl_ResetLoops(); /* 内外环积分/目标偏移/失联计数统一复位 */
+	Ctrl_ResetLoops(); /* 内外环积分/目标偏移/失联计数统一复位 loop的中文是循环 */
 #if MOTOR_CONTROL_ENABLE
-	Motor_SetEnabled(true);
+	Motor_SetEnabled(true); // 初始化电机为使能状态
 #endif
 	s_ctrl_mode = mode;
 }
@@ -435,23 +444,23 @@ static void Ctrl_SetMode(uint8_t mode) {
 static void Ctrl_OuterTick(void) {
 	float out;
 
-	if (s_ctrl_mode != 2u) {
+	if (s_ctrl_mode != 2u) { // 如果不是小球闭环模式，直接返回，不处理
 		return;
 	}
-	if (g_tof.range_status != 0) {
-		if (s_tof_lost_n < 255u) {
-			s_tof_lost_n++;
+	if (g_tof.range_status != 0) { // 如果 ToF 无效
+		if (s_tof_lost_n < 255u) { // 如果 ToF 失联计数未超阈值
+			s_tof_lost_n++;		   // 增加 ToF 失联计数
 		}
-		if (s_tof_lost_n >= BALL_LOSS_MAX_FRAMES) {
-			PID_Reset(&s_ball_pid);
+		if (s_tof_lost_n >= BALL_LOSS_MAX_FRAMES) { // 如果 ToF 失联计数超阈值
+			PID_Reset(&s_ball_pid);					// 复位小球闭环环
 			s_ball_ofs_cnt = 0; /* 回中：内环目标回到摆杆保持零点 */
 		}
 		return;
 	}
-	s_tof_lost_n = 0;
+	s_tof_lost_n = 0; // 重置 ToF 失联计数为 0
 
 	/* err = 0 - pos（PID 内部计算）；SIGN 吸收机械链路符号，见宏注释 */
-	out			   = BALL_PID_SIGN * PID_Update(&s_ball_pid, 0.0f, (float) g_tof.pos_cm_x10);
+	out			   = BALL_PID_SIGN * PID_Update(&s_ball_pid, 0.0f, (float) g_tof.pos_cm_x10); // 计算小球闭环环目标偏移
 	s_ball_ofs_cnt = (int16_t) out; /* PID 输出已限幅 ±BALL_PID_OUT_LIM(400)，不溢出 */
 }
 
@@ -460,18 +469,18 @@ static void Ctrl_OuterTick(void) {
  * @note  ISR 上下文：只做一次 PID 计算与一次 TIM2 下发，不可阻塞
  */
 static void Ctrl_InnerTick(void) {
-	int32_t fb;
-	float	target;
-	float	f_out;
+	int32_t fb;		// 编码器位置计数
+	float	target; // 目标位置
+	float	f_out;	// 输出频率
 
-	if (s_ctrl_mode == 0u) {
+	if (s_ctrl_mode == 0u) { // 如果是释放模式，直接返回，不处理
 		return;
 	}
-	target = (s_ctrl_mode == 2u) ? (float) s_ball_ofs_cnt : 0.0f;
-	fb	   = Encoder_Read();
-	f_out  = HOLD_PID_SIGN * PID_Update(&s_hold_pid, target, (float) fb);
+	target = (s_ctrl_mode == 2u) ? (float) s_ball_ofs_cnt : 0.0f;		  // 目标位置 = 外环偏移（模式1恒为0）
+	fb	   = Encoder_Read();											  // 读取编码器位置计数
+	f_out  = HOLD_PID_SIGN * PID_Update(&s_hold_pid, target, (float) fb); // 计算平台保持环输出频率
 #if MOTOR_CONTROL_ENABLE
-	Motor_SetTargetFreq((int32_t) f_out);
+	Motor_SetTargetFreq((int32_t) f_out); // 设置电机目标频率
 #else
 	(void) f_out; /* 总开关关闭：PID 照算便于观察积分/目标，但不驱动电机 */
 #endif
@@ -485,23 +494,23 @@ static void Ctrl_InnerTick(void) {
  *        不动"前提下的取舍。
  */
 static void Ctrl_EncService(void) {
-	int32_t abs;
+	int32_t abs; // 绝对位置计数
 
 	(void) Encoder_Read();	   /* 模式 0 时内环 ISR 不读编码器，由这里刷新计数 */
 	(void) Encoder_ProcessZ(); /* Z 相：绝对计数对齐到最近整圈 */
 
-	if (s_ctrl_mode != 0u) {
+	if (s_ctrl_mode != 0u) {				 // 如果不是释放模式，直接返回，不处理
 		s_store_abs_ref = Encoder_ReadAbs(); /* 控制中只跟踪，不擦 Flash */
 		return;
 	}
 
-	abs = Encoder_ReadAbs();
-	if (abs != s_store_abs_ref) {
+	abs = Encoder_ReadAbs();	  // 读取绝对位置计数
+	if (abs != s_store_abs_ref) { // 如果绝对位置计数与上一次不同
 		s_store_abs_ref = abs; /* 仍在动：等静止后再存 */
 		return;
 	}
-	if (Encoder_StorePending()) {
-		(void) Encoder_StoreSave();
+	if (Encoder_StorePending()) {	// 如果有未保存的绝对位置计数
+		(void) Encoder_StoreSave(); // 保存绝对位置计数
 	}
 }
 
@@ -511,11 +520,11 @@ static void Ctrl_EncService(void) {
  */
 static void Ctrl_SendTelemetry(void) {
 	int32_t vofa[VOFA_CH_NUM] = {
-		[VOFA_CH_FILT_MM]	= (int32_t) g_tof.filt_mm,
-		[VOFA_CH_PULSE_FREQ] = Motor_GetPulseFreqHz(),
-		[VOFA_CH_ENC_CNT]	= Encoder_Read(),
+		[VOFA_CH_FILT_MM]	 = (int32_t) g_tof.filt_mm, // 滤波距离
+		[VOFA_CH_PULSE_FREQ] = Motor_GetPulseFreqHz(),	// 脉冲频率
+		[VOFA_CH_ENC_CNT]	 = Encoder_Read(),			// 编码器计数
 	};
-	VOFA_SendFrame(vofa, (uint8_t) VOFA_CH_NUM);
+	VOFA_SendFrame(vofa, (uint8_t) VOFA_CH_NUM); // 发送 VOFA 帧
 }
 
 /**
@@ -524,10 +533,10 @@ static void Ctrl_SendTelemetry(void) {
  *        模式 1（回到模式 1 需重新上电）；松手不自动恢复
  */
 static void Ctrl_PollKeyEvents(void) {
-	KeyEvent_t ke;
+	KeyEvent_t ke; // 按键事件
 
-	while ((ke = Key_PollEvent()) != KEY_EVT_NONE) {
-		if (ke == KEY_EVT_PRESS) {
+	while ((ke = Key_PollEvent()) != KEY_EVT_NONE) { // 消费按键事件
+		if (ke == KEY_EVT_PRESS) {					 // 如果是按键按下事件
 			if (s_key_estop == 0u) {
 				s_key_estop = 1u;
 				Ctrl_SetMode(0);
@@ -543,10 +552,10 @@ static void Ctrl_PollKeyEvents(void) {
 
 /** @brief R 命令：复位内外环积分与目标偏移（2 个调用点：模式切换、R 命令） */
 static void Ctrl_ResetLoops(void) {
-	PID_Reset(&s_hold_pid);
-	PID_Reset(&s_ball_pid);
-	s_ball_ofs_cnt = 0;
-	s_tof_lost_n   = 0;
+	PID_Reset(&s_hold_pid); // 重置平台保持环 PID
+	PID_Reset(&s_ball_pid); // 重置小球闭环环 PID
+	s_ball_ofs_cnt = 0;		// 重置小球闭环环目标偏移为 0
+	s_tof_lost_n   = 0;		// 重置 TOF 失帧计数为 0
 }
 
 /* ===================== 应用层：上位机行协议 ===============================
@@ -623,7 +632,7 @@ static void Cmd_ParseLine(const char *line) {
  * @note  非阻塞；一次可处理队列中多条命令
  */
 static void Cmd_Poll(void) {
-	char line[UART1_LINE_MAX];
+	char line[UART1_LINE_MAX]; // 串口行缓冲区
 
 	USART1_EnsureRx(); /* RX 停摆自愈 */
 	while (USART1_GetLine(line, (uint8_t) sizeof line)) {
