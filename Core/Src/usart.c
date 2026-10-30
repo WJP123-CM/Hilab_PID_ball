@@ -175,7 +175,7 @@ static void uart_tx_poll(const uint8_t *buf, uint16_t len) {
 
 /**
  * @brief 发送 VOFA+ FireWater 文本帧：ch0,ch1,...,chN\n
- * @param data 通道值数组（整数，按 VOFA_CH_* 顺序）；ch_num 通道数（本工程 6）
+ * @param data 通道值数组（整数，按 VOFA_CH_* 顺序）；ch_num 通道数（本工程 3）
  * @retval 无
  * @note  通道用整数（newlib-nano 无 %f，%.2f 会输出空串）；仅 20Hz 主循环调用；
  *        同一时刻不得再发其它文本，避免破坏 VOFA 帧解析

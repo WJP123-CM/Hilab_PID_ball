@@ -90,23 +90,17 @@
 #define MOTOR_CONTROL_ENABLE 0
 
 /* ================= VOFA 串口帧通道定义（唯一权威表） =================
- * 原则：串口只送实时流变量；低频状态量（控制模式/急停/绝对位置/Z 计数/
- * 电机使能）随 OLED 页面观察，不占串口带宽。
+ * 串口只送 3 项实时数据：滤波距离、脉冲频率、编码器计数；
+ * 其余（状态码/积分/目标偏移/绝对位置/Z 计数/模式）一律不上传。
  *   idx  名称            单位        来源
- *   0    enc_rel         enc_cnt     内环反馈 Encoder_Read()
- *   1    hold_target     enc_cnt     内环目标（模式2=外环偏移，其余 0）
- *   2    hold_integral   Hz×1000     内环积分项（判积分饱和）
- *   3    pulse_freq_hz   Hz          实际脉冲频率 Motor_GetPulseFreqHz()
- *   4    pos_cm_x10      0.1cm       小球位置（ToF 滤波后）
- *   5    ball_ofs_cnt    enc_cnt     外环输出
+ *   0    filt_mm         mm          ToF 滤波后距离 g_tof.filt_mm
+ *   1    pulse_freq_hz   Hz          实际脉冲频率 Motor_GetPulseFreqHz()
+ *   2    enc_cnt         enc_cnt     编码器相对计数 Encoder_Read()
  * 增删通道：只改本枚举 + Ctrl_SendTelemetry 填表 + 上位机 channels.json。 */
 enum {
-	VOFA_CH_ENC_REL = 0,   /* 0 内环反馈（编码器计数） */
-	VOFA_CH_HOLD_TARGET,   /* 1 内环目标（编码器计数） */
-	VOFA_CH_HOLD_INTEGRAL, /* 2 内环积分项 ×1000（Hz） */
-	VOFA_CH_PULSE_FREQ,	   /* 3 实际脉冲频率（Hz） */
-	VOFA_CH_POS_CM_X10,	   /* 4 小球位置（0.1cm） */
-	VOFA_CH_BALL_OFS,	   /* 5 外环输出（编码器计数） */
+	VOFA_CH_FILT_MM = 0,   /* 0 滤波后距离（mm） */
+	VOFA_CH_PULSE_FREQ,	   /* 1 实际脉冲频率（Hz） */
+	VOFA_CH_ENC_CNT,	   /* 2 编码器相对计数 */
 	VOFA_CH_NUM			   /* 通道总数（=帧长） */
 };
 /* USER CODE END PD */
@@ -230,9 +224,6 @@ int main(void)
 	HAL_IWDG_Refresh(&hiwdg);
 
 	OLED_Init();
-	/* 启动页标题行 */
-	OLED_Print(0, 0, "TOF FILTER TEST");
-	OLED_Flush(0, 0, OLED_WIDTH, 8);
 	HAL_IWDG_Refresh(&hiwdg);
 
 	/* 复位诊断：第二行显示上次复位源，P=上电/掉电 I=IWDG N=NRST S=软件 */
@@ -278,7 +269,7 @@ int main(void)
 	Ctrl_Init();
 	HAL_IWDG_Refresh(&hiwdg);
 
-	/* 接收上位机命令（A/Z/S/H/B/P/I/D/R）；VOFA 数据流仍只含数值，不混入文本 */
+	/* 接收上位机命令（A/Z/P/I/D/R）；VOFA 数据流仍只含数值，不混入文本 */
 	USART1_StartRx();
 
 	/* SysTick 优先级=1（须高于 TIM1=2）：ISR 内 HAL_GetTick() 走时，
@@ -319,20 +310,16 @@ int main(void)
 			s_oled_tick = 0;
 			Ctrl_EncService();
 
-			/* 运行时页面：测距/滤波/位置/状态/占比/模式/编码器绝对位置 */
-			int16_t pos		= g_tof.pos_cm_x10;
-			char	sign	= (pos < 0) ? '-' : ' ';
+			/* 运行时页面：仅 3 项——原始距离 / 零点校准后位置 / 有效帧占比 */
+			int16_t pos	  = g_tof.pos_cm_x10;
+			char	sign  = (pos < 0) ? '-' : ' ';
 			int32_t abs_pos = (pos < 0) ? -(int32_t) pos : (int32_t) pos;
 
-			OLED_ClearArea(0, 16, OLED_WIDTH, 48);
-			OLED_Print(0, 16, "RAW:%4d mm", (int) g_tof.raw_mm);
-			OLED_Print(0, 24, "FLT:%4d mm", (int) g_tof.filt_mm);
-			OLED_Print(0, 32, "POS:%c%ld.%ld cm", sign, (long) (abs_pos / 10), (long) (abs_pos % 10));
-			OLED_Print(0, 40, "ST:%d A:%d", (int) g_tof.range_status, (int) g_tof.alpha_milli);
-			OLED_Print(0, 48, "V:%3lu%% M:%c", (unsigned long) g_tof.valid_pct,
-					   (s_key_estop != 0u) ? 'E' : (char) ('0' + s_ctrl_mode));
-			OLED_Print(0, 56, "ENC:%6ld Z:%lu", (long) Encoder_ReadAbs(), (unsigned long) Encoder_GetZCount());
-			OLED_Flush(0, 16, OLED_WIDTH, 48);
+			OLED_ClearArea(0, 0, OLED_WIDTH, 64);
+			OLED_Print(0, 0,  "RAW:%4d mm", (int) g_tof.raw_mm);
+			OLED_Print(0, 8,  "POS:%c%ld.%ld cm", sign, (long) (abs_pos / 10), (long) (abs_pos % 10));
+			OLED_Print(0, 16, "VAL:%3lu%%", (unsigned long) g_tof.valid_pct);
+			OLED_Flush(0, 0, OLED_WIDTH, 24);
 		}
 
 		/* 按键事件消费（非阻塞）：急停锁存 / 解除锁存 */
@@ -514,17 +501,13 @@ static void Ctrl_EncService(void) {
 
 /**
  * @brief 20Hz VOFA FireWater 帧（通道定义见本文件 PD 枚举）
- * @note  只送实时流变量；模式/急停/绝对位置/Z 计数/使能等低频状态量走 OLED
+ * @note  只送 3 项：滤波距离 / 脉冲频率 / 编码器计数；其余状态不上传
  */
 static void Ctrl_SendTelemetry(void) {
-	int32_t hold_tgt		  = (s_ctrl_mode == 2u) ? (int32_t) s_ball_ofs_cnt : 0;
 	int32_t vofa[VOFA_CH_NUM] = {
-		[VOFA_CH_ENC_REL]		= Encoder_Read(),
-		[VOFA_CH_HOLD_TARGET]	= hold_tgt,
-		[VOFA_CH_HOLD_INTEGRAL] = (int32_t) (s_hold_pid.integral * 1000.0f),
-		[VOFA_CH_PULSE_FREQ]	= Motor_GetPulseFreqHz(),
-		[VOFA_CH_POS_CM_X10]	= (int32_t) g_tof.pos_cm_x10,
-		[VOFA_CH_BALL_OFS]		= (int32_t) s_ball_ofs_cnt,
+		[VOFA_CH_FILT_MM]	= (int32_t) g_tof.filt_mm,
+		[VOFA_CH_PULSE_FREQ] = Motor_GetPulseFreqHz(),
+		[VOFA_CH_ENC_CNT]	= Encoder_Read(),
 	};
 	VOFA_SendFrame(vofa, (uint8_t) VOFA_CH_NUM);
 }
