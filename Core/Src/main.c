@@ -68,15 +68,20 @@
 #define BALL_PID_KD			  0.0f	 /* ToF 群延迟大（中值2帧+EMA），起步不用 D */
 #define BALL_PID_ILIM		  100.0f /* 积分限幅（计数） */
 #define BALL_PID_OUT_LIM	  400.0f /* 外环输出限幅（计数，≈36°）防目标角度翻车 */
-#define BALL_PID_DEADBAND_X10 3.0f	 /* 死区 ±0.3cm（≈1.6σ，σ=1.87mm 实测） */
-/* 环路符号：+1 表示"PID 输出正偏移 → pos 减小"。符号错则正反馈跑飞。
- * 符号链（用户确认：编码器示数与 ToF 测距示数正相关）：
- *   freq>0 → enc 增大（ENC_POS_DIR_SIGN=+1）
- *   enc 增大 ↔ ToF 读数增大 ↔ pos 增大
- *   外环 err=0-pos：pos>0 → 输出为负 → 编码器目标偏移为负 → enc 减小 → pos 减小
- * 故 +1 自洽，无需实测翻转。若实物上 pos 与 enc 一增一减，先查 A/B 相接线
- * 与 TOF_POS_SIGN，再同步取反本宏（不可只改一个）。 */
-#define BALL_PID_SIGN		 (+1)
+#define BALL_PID_DEADBAND_X10 3.0f /* 死区 ±0.3cm（≈1.6σ，σ=1.87mm 实测） */
+/* 内环符号：+1 表示"PID 输出正 → freq>0"。ENC_DIR_SIGN=+1 使 freq>0 → enc↓，
+ * 故 target>fb 时需 freq<0 才能使 enc↑ 朝 target 运动 → 取 -1。
+ * 与 ENC_DIR_SIGN 取反：ENC_DIR_SIGN=+1 → HOLD_PID_SIGN=-1。 */
+#define HOLD_PID_SIGN (-1)
+
+/* 外环符号链（2026-10-30 随 ENC_DIR_SIGN=+1 重新推导）：
+ *   freq>0 → enc↓（ENC_DIR_SIGN=+1）
+ *   enc↑ ↔ ToF 读数↓ ↔ pos↓（ENC_DIR_SIGN 翻转后 enc 与 pos 负相关）
+ *   pos>0 时需 pos↓ → 需 enc↑ → 需内环 target>当前 enc → s_ball_ofs_cnt>0
+ *   PID_Update(0, pos>0) 输出为负 → BALL_PID_SIGN=-1 使 s_ball_ofs_cnt>0
+ * 故 -1 自洽。若实物上 pos 与 enc 同增同减，先查 A/B 相接线与 TOF_POS_SIGN，
+ * 再同步取反本宏（不可只改一个）。 */
+#define BALL_PID_SIGN		 (-1)
 #define BALL_LOSS_MAX_FRAMES 10u /* ToF 连续无效 0.5s → 外环回中（防失联跑飞） */
 
 /* 上电是否自动进入平台保持（0 = 不使能，1 = 使能） */
@@ -464,7 +469,7 @@ static void Ctrl_InnerTick(void) {
 	}
 	target = (s_ctrl_mode == 2u) ? (float) s_ball_ofs_cnt : 0.0f;
 	fb	   = Encoder_Read();
-	f_out  = PID_Update(&s_hold_pid, target, (float) fb);
+	f_out  = HOLD_PID_SIGN * PID_Update(&s_hold_pid, target, (float) fb);
 #if MOTOR_CONTROL_ENABLE
 	Motor_SetTargetFreq((int32_t) f_out);
 #else

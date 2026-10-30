@@ -11,10 +11,14 @@
  * 绝对计数 + Z 整圈校准、Flash 末页掉电保存，以及绝对位置软限幅的区间常量。
  * 电机脉冲/方向/使能在 motor.c；本模块不碰 TIM2 与电机 GPIO。
  *
- * 方向符号链（改任一处必须核对全部三处，否则软限幅判向反、内环成正反馈）：
- *   ENC_DIR_SIGN     : A/B 原始增量 → 计数增量的符号（实测修正为 -1）
- *   ENC_POS_DIR_SIGN : 绝对计数增大 ↔ 摆杆哪一侧（motor.c 软限幅判向用）
- *   BALL_PID_SIGN    : 外环输出 → 编码器目标偏移的符号（见 ctrl_loop.c）
+ * 方向符号链（改任一处必须核对全部四处，否则软限幅判向反、内外环成正反馈）：
+ *   ENC_DIR_SIGN     : A/B 原始增量 → 计数增量的符号（2026-10-30 统一为 +1 负相关）
+ *   ENC_POS_DIR_SIGN : 绝对计数增大 ↔ 摆杆哪一侧（motor.c 软限幅判向用，须与
+ *                      ENC_DIR_SIGN 取反使 freq>0 时 pos_dir 指向 enc 实际运动方向）
+ *   HOLD_PID_SIGN    : 内环 PID 输出 → 频率符号（main.c Ctrl_InnerTick，须使
+ *                      target>fb 时 enc 朝 target 运动）
+ *   BALL_PID_SIGN    : 外环输出 → 编码器目标偏移符号（main.c，须使 pos>0 时
+ *                      s_ball_ofs_cnt 驱动 enc 朝使 pos 减小的方向运动）
  ******************************************************************************
  */
 #ifndef __ENCODER_H__
@@ -31,11 +35,13 @@ extern "C" {
 #define ENC_PPR	1000u
 #define ENC_CPR (ENC_PPR * 4u)
 
-/* 计数方向修正：+1 = 计数增量与 Motor_SetTargetFreq 正号同向。
- * 实测（2026-10-29）：H1 下电机持续单方向旋转且软限幅不触发，说明 freq>0 时
- * 原始 A/B 计数在减小（A/B 相接反或 DIR 极性相反），取 -1 修正。
- * 本宏统一作用于相对计数与绝对计数；改回接线修正后可恢复 +1。 */
-#define ENC_DIR_SIGN (-1)
+/* 计数方向修正：+1 = 计数增量与 Motor_SetTargetFreq 正号同向；
+ *                         -1 = 计数增量与 freq 反向（负相关）。
+ * 2026-10-30 统一改为负相关：freq>0 → Encoder_Read 返回值减小。
+ * 依据：实测 freq>0 时原始 A/B CNT 减小（A/B 相接反或 DIR 极性相反），
+ *       取 +1 后 d = +1 × (负数) = 负数 → enc 减小，与 freq 负相关。
+ * 本宏统一作用于相对计数与绝对计数；改回接线修正后可恢复 -1。 */
+#define ENC_DIR_SIGN (+1)
 
 /* ==================== 绝对位置软限幅区间 ==============================
  * 只在电机"朝超出限位区间外"的方向运动时切断 PWM；返回区间内的方向始终
@@ -44,7 +50,10 @@ extern "C" {
  * 越界判断方向随之反，限幅会完全失效（已实测过）。 */
 #define ENC_POS_LIM_MIN	  4400	 /* 允许的最小绝对计数 */
 #define ENC_POS_LIM_MAX	  4800	 /* 允许的最大绝对计数 */
-#define ENC_POS_DIR_SIGN  (+1) /* 绝对计数增大 ↔ 正转方向 */
+/* 2026-10-30：ENC_DIR_SIGN=+1 使 freq>0 → enc↓（绝对计数减小），
+ * 故 freq>0 时 pos_dir 须为负（指向 MIN 方向）才能正确限幅。
+ * 与 ENC_DIR_SIGN 取反：ENC_DIR_SIGN=+1 → ENC_POS_DIR_SIGN=-1。 */
+#define ENC_POS_DIR_SIGN  (-1) /* 绝对计数增大 ↔ 正转方向 */
 
 /* ==================== 掉电保存（Flash 末页） ==========================
  * 程序用前 63 页，最后 1 页（0x0800FC00，链接脚本已减为 63K）专存绝对计数。
