@@ -21,8 +21,9 @@
 #pragma GCC diagnostic pop
 #include "vl53l1_platform_stm32.h"
 
-/* 有效帧占比统计周期：5s（非刷新周期） */
-#define VALID_WIN_MS 5000u
+/* 有效帧占比统计窗口默认值：5s（可运行时通过 Tof_SetRuntimeCfg 改） */
+#define VALID_WIN_DEFAULT_MS 5000u
+static uint32_t s_valid_win_ms = VALID_WIN_DEFAULT_MS;
 
 /* ==================== 传感器驱动（本模块私有） ========================== */
 
@@ -44,7 +45,36 @@ static VL53L1_Dev_t s_dev; /* 设备句柄 */
  * @retval 0 = 成功；非 0 = VL53L1X 错误码（失败步骤名见 g_tof.last_step）
  * @note  仅上电初始化阶段调用；本层不做提示输出/停机，显示与停机由 main.c 决定
  */
-int Tof_InitSensor(void) {
+/**
+ * @brief 填入默认传感器配置（8×8 ROI / SHORT / 16ms 预算 / 20ms 周期 / 串扰关）
+ */
+void Tof_GetDefaultSensorCfg(TofSensorCfg_t *cfg) {
+	if (cfg == 0) {
+		return;
+	}
+	cfg->roi_tl_x        = 4u;
+	cfg->roi_tl_y        = 11u;
+	cfg->roi_br_x        = 11u;
+	cfg->roi_br_y        = 4u;
+	cfg->distance_mode   = 0u;                          /* SHORT */
+	cfg->timing_budget_us = 16000u;                     /* 16ms */
+	cfg->inter_period_ms  = 20u;                        /* 20ms = 50Hz */
+	cfg->xtalk_enable    = 0u;
+}
+
+/**
+ * @brief 传感器初始化并启动连续测量（内部阻塞 ~数百 ms，各步之间喂狗）
+ * @param cfg 传感器测距参数（传 NULL 则用默认配置）
+ * @retval 0 = 成功；非 0 = VL53L1X 错误码（失败步骤名见 g_tof.last_step）
+ * @note  仅上电初始化阶段调用；本层不做提示输出/停机，显示与停机由 main.c 决定
+ */
+int Tof_InitSensor(const TofSensorCfg_t *cfg) {
+	TofSensorCfg_t def;
+
+	if (cfg == 0) {
+		Tof_GetDefaultSensorCfg(&def);
+		cfg = &def;
+	}
 	g_tof.last_step = "OK";
 
 	/* 0. 总线准备：PB6/PB7 开漏复用模式下使能 STM32 内部上拉，并等传感器上电稳定。
@@ -68,24 +98,24 @@ int Tof_InitSensor(void) {
 	VL53_INIT_STEP(VL53L1_StaticInit(&s_dev), "StaticInit");
 	/* 4. 参考 SPAD 管理（裸模块上电执行一次即可） */
 	VL53_INIT_STEP(VL53L1_PerformRefSpadManagement(&s_dev), "PerformRefSpadManagement");
-	/* 5. ROI：缩到中心 8×8 SPAD，min range 从默认 ~70mm 降到 ~35mm
-	 *    （4×4 时信噪比太低，硬件自检频繁炸；8×8 是近距离 min range 与
-	 *    信噪比的合适折中）。TopLeftY≥BotRightY、width/height=间隔数。
-	 *    ROI 越小 → min range 越低 → 信噪比越差 → 远距离越容易 5/7。
-	 *    恢复全阵列：{0, 15, 15, 0}。 */
+	/* 5. ROI：TopLeftY≥BotRightY、width/height=间隔数。
+	 *    默认 8×8 SPAD 是近距离 min range 与信噪比的折中；
+	 *    恢复全阵列传 {0,15,15,0}。具体值由 cfg 决定。 */
 	{
-		VL53L1_UserRoi_t roi = {4, 11, 11, 4}; /* 8×8 SPAD：TL(4,11)→BR(11,4)，间隔 7→8 SPAD */
+		VL53L1_UserRoi_t roi;
+		roi.TopLeftX     = cfg->roi_tl_x;
+		roi.TopLeftY     = cfg->roi_tl_y;
+		roi.BotRightX    = cfg->roi_br_x;
+		roi.BotRightY    = cfg->roi_br_y;
 		VL53_INIT_STEP(VL53L1_SetUserROI(&s_dev, &roi), "SetUserROI");
 	}
-	/* 6. 测距参数：关串扰补偿、SHORT 模式（250mm 近距离最优、抗环境光）、
-	 *    16ms 测量预算、20ms 帧周期 → 50Hz（与 TIM1 的 20ms 采样回调对齐）。
-	 *    注意：库强制要求 帧周期 ≥ 测量预算 + 4ms 保护(见 VL53L1_StartMeasurement)，
-	 *    故 20ms 帧周期下预算取 16ms（20 = 16 + 4）恰好通过校验。 */
-	VL53_INIT_STEP(VL53L1_SetXTalkCompensationEnable(&s_dev, 0), "SetXTalkCompensationEnable");
-	VL53_INIT_STEP(VL53L1_SetDistanceMode(&s_dev, VL53L1_DISTANCEMODE_SHORT), "SetDistanceMode");
-	VL53_INIT_STEP(VL53L1_SetMeasurementTimingBudgetMicroSeconds(&s_dev, 16000), "SetTimingBudget");
-	VL53_INIT_STEP(VL53L1_SetInterMeasurementPeriodMilliSeconds(&s_dev, 20), "SetInterMeasurementPeriod");
-	/* 6. 启动连续测量模式 */
+	/* 6. 测距参数：串扰补偿、距离模式、测量预算、帧周期均由 cfg 决定。
+	 *    库强制要求 帧周期 ≥ 测量预算 + 4ms 保护（见 VL53L1_StartMeasurement）。 */
+	VL53_INIT_STEP(VL53L1_SetXTalkCompensationEnable(&s_dev, cfg->xtalk_enable), "SetXTalkCompensationEnable");
+	VL53_INIT_STEP(VL53L1_SetDistanceMode(&s_dev, (cfg->distance_mode == 0u) ? VL53L1_DISTANCEMODE_SHORT : VL53L1_DISTANCEMODE_LONG), "SetDistanceMode");
+	VL53_INIT_STEP(VL53L1_SetMeasurementTimingBudgetMicroSeconds(&s_dev, cfg->timing_budget_us), "SetTimingBudget");
+	VL53_INIT_STEP(VL53L1_SetInterMeasurementPeriodMilliSeconds(&s_dev, cfg->inter_period_ms), "SetInterMeasurementPeriod");
+	/* 7. 启动连续测量模式 */
 	VL53_INIT_STEP(VL53L1_StartMeasurement(&s_dev), "StartMeasurement");
 
 	return 0;
@@ -199,7 +229,7 @@ void Tof_Tick(TofFilter_t *f) {
 	g_tof.valid_pct = (uint8_t) ((s_win_valid * 100u + s_win_total / 2u) / s_win_total);
 
 	now_ms = HAL_GetTick();
-	if ((uint32_t) (now_ms - s_win_t0) >= VALID_WIN_MS) {
+	if ((uint32_t) (now_ms - s_win_t0) >= s_valid_win_ms) {
 		s_win_t0	= now_ms;
 		s_win_total = 0;
 		s_win_valid = 0;
@@ -207,7 +237,7 @@ void Tof_Tick(TofFilter_t *f) {
 }
 
 /**
- * @brief 清有效帧占比统计并重置 5s 窗口
+ * @brief 清有效帧占比统计并重置窗口
  * @note  R 命令调用；滤波器自身状态由调用方另行 TofFilter_Reset
  */
 void Tof_ResetStats(void) {
@@ -215,4 +245,44 @@ void Tof_ResetStats(void) {
 	s_win_valid	 = 0;
 	s_win_t0	 = HAL_GetTick();
 	g_tof.valid_pct	 = 0;
+}
+
+/**
+ * @brief 填入当前运行时参数快照
+ * @param cfg 输出结构体；f 滤波器实例（可为 NULL，此时 alpha/zero/范围取默认）
+ */
+void Tof_GetRuntimeCfg(TofRuntimeCfg_t *cfg, const TofFilter_t *f) {
+	if (cfg == 0) {
+		return;
+	}
+	cfg->alpha_milli     = (f != 0) ? f->alpha_milli : TOF_FILTER_ALPHA_DEFAULT_MILLI;
+	cfg->zero_mm         = (f != 0) ? f->zero_mm : TOF_FILTER_ZERO_DEFAULT_MM;
+	cfg->min_valid_mm    = (f != 0) ? f->min_valid_mm : TOF_FILTER_MIN_VALID_MM;
+	cfg->max_valid_mm    = (f != 0) ? f->max_valid_mm : TOF_FILTER_MAX_VALID_MM;
+	cfg->valid_window_ms = s_valid_win_ms;
+}
+
+/**
+ * @brief 在线更新运行时参数（字段为 0 的项保持不变，仅覆盖显式设置项）
+ * @param cfg 新参数；f 滤波器实例（应用层持有）
+ * @note  测量类参数（ROI/模式/预算/帧周期）不在此接口，需重新 Tof_InitSensor
+ */
+void Tof_SetRuntimeCfg(const TofRuntimeCfg_t *cfg, TofFilter_t *f) {
+	if (cfg == 0 || f == 0) {
+		return;
+	}
+	if (cfg->alpha_milli != 0u) {
+		TofFilter_SetAlpha(f, cfg->alpha_milli);
+	}
+	if (cfg->zero_mm != 0) {
+		TofFilter_SetZeroMm(f, cfg->zero_mm);
+	}
+	if (cfg->min_valid_mm != 0 || cfg->max_valid_mm != 0) {
+		TofFilter_SetValidRange(f, cfg->min_valid_mm, cfg->max_valid_mm);
+	}
+	if (cfg->valid_window_ms != 0u) {
+		s_valid_win_ms = cfg->valid_window_ms;
+		/* 改窗口后立即重置统计，避免旧窗口数据污染 */
+		Tof_ResetStats();
+	}
 }

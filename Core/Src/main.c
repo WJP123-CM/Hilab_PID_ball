@@ -246,7 +246,7 @@ int main(void)
 	/* VL53L1X 初始化 + 启动连续测量（Short 模式 250mm）。
 	 * 内部阻塞 ~数百 ms；失败在应用层显示错误页并持续喂狗停机 */
 	{
-		int err = Tof_InitSensor();
+		int err = Tof_InitSensor(NULL);
 
 		if (err != 0) {
 			OLED_Print(0, 16, "VL53 FAIL");

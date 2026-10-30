@@ -50,6 +50,7 @@ void TofFilter_Init(TofFilter_t *f, uint16_t alpha_milli, int16_t zero_mm) {
 		return;
 	}
 	TofFilter_SetAlpha(f, alpha_milli);
+	TofFilter_SetValidRange(f, TOF_FILTER_MIN_VALID_MM, TOF_FILTER_MAX_VALID_MM);
 	TofFilter_SetZeroMm(f, zero_mm);
 	TofFilter_Reset(f);
 }
@@ -90,7 +91,7 @@ void TofFilter_SetAlpha(TofFilter_t *f, uint16_t alpha_milli) {
 }
 
 /**
- * @brief 设置零点距离（mm），越界自动夹到 [0, MAX_VALID_MM]
+ * @brief 设置零点距离（mm），越界自动夹到 [0, max_valid_mm]
  */
 void TofFilter_SetZeroMm(TofFilter_t *f, int16_t zero_mm) {
 	if (f == 0) {
@@ -98,10 +99,28 @@ void TofFilter_SetZeroMm(TofFilter_t *f, int16_t zero_mm) {
 	}
 	if (zero_mm < 0) {
 		zero_mm = 0;
-	} else if (zero_mm > TOF_FILTER_MAX_VALID_MM) {
-		zero_mm = TOF_FILTER_MAX_VALID_MM;
+	} else if (zero_mm > f->max_valid_mm) {
+		zero_mm = f->max_valid_mm;
 	}
 	f->zero_mm = zero_mm;
+}
+
+/**
+ * @brief 设置有效距离门限（mm），越界帧在 TofFilter_Update 中被拒绝
+ * @param min 最小有效距离（<0 时取 0）；max 最大有效距离（≤min 时取默认 MAX）
+ */
+void TofFilter_SetValidRange(TofFilter_t *f, int16_t min, int16_t max) {
+	if (f == 0) {
+		return;
+	}
+	if (min < 0) {
+		min = 0;
+	}
+	if (max <= min) {
+		max = TOF_FILTER_MAX_VALID_MM;
+	}
+	f->min_valid_mm = min;
+	f->max_valid_mm = max;
 }
 
 /**
@@ -134,7 +153,7 @@ bool TofFilter_Update(TofFilter_t *f, int16_t raw_mm, int8_t range_status) {
 	if (range_status != 0) {
 		return false;
 	}
-	if (raw_mm < TOF_FILTER_MIN_VALID_MM || raw_mm > TOF_FILTER_MAX_VALID_MM) {
+	if (raw_mm < f->min_valid_mm || raw_mm > f->max_valid_mm) {
 		return false;
 	}
 

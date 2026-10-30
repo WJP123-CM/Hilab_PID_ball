@@ -33,7 +33,8 @@ extern "C" {
 #define TOF_FILTER_ALPHA_MAX_MILLI     1000u
 
 /* 有效原始距离范围（mm）：Short 模式标称 0~250mm；工程有效测试点最近 3~5cm。
- * 10mm 仅作“明显异常值”门限，不代表 0~2cm 可用。 */
+ * 10mm 仅作"明显异常值"门限，不代表 0~2cm 可用。运行时可通过
+ * TofFilter_SetValidRange 覆盖，默认值取自下方宏。 */
 #define TOF_FILTER_MIN_VALID_MM 10
 #define TOF_FILTER_MAX_VALID_MM 250
 
@@ -53,6 +54,10 @@ typedef struct {
 	int32_t  ema_milli_mm;
 	uint16_t alpha_milli;
 
+	/* 有效距离门限（运行时可改，默认 TOF_FILTER_MIN/MAX_VALID_MM） */
+	int16_t  min_valid_mm;
+	int16_t  max_valid_mm;
+
 	/* 标定与输出 */
 	int16_t  zero_mm;
 	int16_t  last_raw_mm;
@@ -60,17 +65,24 @@ typedef struct {
 	bool     has_output;
 } TofFilter_t;
 
-/** @brief 初始化滤波器（配置 alpha/零点并清空运行态） */
+/** @brief 初始化滤波器（配置 alpha/零点/有效范围并清空运行态） */
 void TofFilter_Init(TofFilter_t *f, uint16_t alpha_milli, int16_t zero_mm);
 
-/** @brief 清空中值窗口与 EMA 状态；保留 alpha/zero 配置 */
+/** @brief 清空中值窗口与 EMA 状态；保留 alpha/zero/有效范围配置 */
 void TofFilter_Reset(TofFilter_t *f);
 
 /** @brief 在线设置 EMA 系数（千分比，自动夹到 20~1000） */
 void TofFilter_SetAlpha(TofFilter_t *f, uint16_t alpha_milli);
 
-/** @brief 设置零点距离（mm，自动夹到 0~250） */
+/** @brief 设置零点距离（mm，自动夹到 0~max_valid） */
 void TofFilter_SetZeroMm(TofFilter_t *f, int16_t zero_mm);
+
+/**
+ * @brief 设置有效距离门限（mm），越界帧在 TofFilter_Update 中被拒绝
+ * @param min 最小有效距离（<0 时取 0）
+ * @param max 最大有效距离（≤min 时取默认 MAX）
+ */
+void TofFilter_SetValidRange(TofFilter_t *f, int16_t min, int16_t max);
 
 /** @brief 以当前滤波输出为零点；尚无有效输出时返回 false */
 bool TofFilter_ZeroHere(TofFilter_t *f);
