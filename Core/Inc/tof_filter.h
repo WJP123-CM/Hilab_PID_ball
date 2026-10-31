@@ -10,8 +10,10 @@
  *            - alpha 以千分比表示（300 = 0.300），可由上位机 A 命令在线修改。
  *
  *          坐标约定：
- *            pos_cm_x10 = TOF_POS_SIGN * (filtered_mm - zero_mm)
- *            即“滤波后距离相对零点的偏移”，单位 0.1cm；zero_mm 由 Z 命令标定。
+ *            pos_cm_x10 = filtered_mm - zero_mm
+ *            即“滤波后距离相对零点的偏移”，单位 0.1cm；远离传感器为正；
+ *            zero_mm 由 Z 命令标定。此处的符号不再作为方向开关，
+ *            外环方向统一由 main.c 的 BALL_X_ENC_SIGN 决定。
  ******************************************************************************
  */
 #ifndef __TOF_FILTER_H__
@@ -24,11 +26,11 @@ extern "C" {
 #include <stdbool.h>
 #include <stdint.h>
 
-/* 中值窗口长度：5 点可剔除孤立尖峰，同时只引入 2 帧群延迟（20Hz 下约 100ms） */
-#define TOF_FILTER_MEDIAN_N 5u
+/* 中值窗口长度：3 点可剔除单帧孤立尖峰，群延迟 1 帧（50Hz 下 20ms） */
+#define TOF_FILTER_MEDIAN_N 3u
 
-/* EMA 系数默认值：300 = 0.30；越小越平滑、延迟越大 */
-#define TOF_FILTER_ALPHA_DEFAULT_MILLI 300u
+/* EMA 系数默认值：800 = 0.80；越大响应越快、噪声抑制越弱，τ≈40ms（50Hz） */
+#define TOF_FILTER_ALPHA_DEFAULT_MILLI 800u
 #define TOF_FILTER_ALPHA_MIN_MILLI     20u
 #define TOF_FILTER_ALPHA_MAX_MILLI     1000u
 
@@ -37,9 +39,6 @@ extern "C" {
  * TofFilter_SetValidRange 覆盖，默认值取自下方宏。 */
 #define TOF_FILTER_MIN_VALID_MM 8
 #define TOF_FILTER_MAX_VALID_MM 500
-
-/* 位置符号：+1 = 小球远离传感器方向为正；传感器安装方向相反时改为 -1 */
-#define TOF_POS_SIGN (+1)
 
 /* 默认零点：仅用于上电显示；正式测试必须用 Z 命令标定 */
 #define TOF_FILTER_ZERO_DEFAULT_MM 131  /* 2026-10-29 实测静止零点：60s 930帧 mean=131.44mm, σ=1.87mm */

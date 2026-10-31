@@ -25,21 +25,21 @@
  *  └──────┬──────┘   特性：线性时不变、指数滞后；时间常数 τ = −T/ln(1−α)
  *         │ filt      首帧：直接赋值 ema = med，避免上电从 0 缓慢爬升
  *         ▼
- *  ┌─────────────┐   pos = (filt_mm − zero_mm) × TOF_POS_SIGN
+ *  ┌─────────────┐   pos = filt_mm − zero_mm（远离传感器为正）
  *  │ 4. 零点换算  │   输出单位：0.1 cm（pos_cm_x10）
  *  └─────────────┘   zero_mm：Z 命令标定的静止零点距离
  *
  * ====================== 可配置参数（宏 + 运行时接口） ======================
  *
  * 【中值窗口】
- *   TOF_FILTER_MEDIAN_N  (固定编译宏，=5)
+ *   TOF_FILTER_MEDIAN_N  (固定编译宏，=3)
  *     窗口长度。越大抗尖峰越强，但群延迟越大（每增 2 点延迟 +1 帧）。
- *     N=5 时延迟 2 帧 = 100 ms（20 Hz），可去除最多连续 2 帧的孤立尖峰。
+ *     N=3 时延迟 1 帧 = 20 ms（50 Hz），可去除单帧孤立尖峰。
  *
  * 【EMA 系数】
  *   alpha_milli  (运行时可调，A 命令，范围 [20, 1000]‰)
  *     EMA 平滑系数，千分比。1000 = 直通（不滤波），越小越平滑但延迟越大。
- *     默认 300 (α=0.30) → τ ≈ 140 ms，阶跃到 95% 约 420 ms。
+ *     默认 800 (α=0.80) → τ ≈ 40 ms，阶跃到 95% 约 120 ms。
  *     调参方向：噪声大→减小 alpha；响应慢→增大 alpha。
  *   TOF_FILTER_ALPHA_DEFAULT/MIN/MAX_MILLI  (编译宏，限定上下限与默认值)
  *
@@ -48,24 +48,23 @@
  *     原始距离越此范围的帧被视为无效并丢弃（拒绝时 Tof_Tick 上报 -3）；
  *     max_valid_mm 同时用于 TofFilter_SetZeroMm 的零点夹取。
  *
- * 【位置符号与零点】
- *   TOF_POS_SIGN  (编译宏，+1)
- *     +1 = 小球远离传感器方向为正；传感器安装方向相反时改为 −1。
+ * 【零点与位置】
  *   zero_mm  (运行时可调，Z 命令标定，默认 131 mm)
- *     静止时小球到传感器的期望距离。pos_cm_x10 = (filt − zero) × sign。
+ *     静止时小球到传感器的期望距离。pos_cm_x10 = filt − zero。
+ *     本模块不再提供方向符号；外环方向统一由 main.c 的 BALL_X_ENC_SIGN 决定。
  *
  * ====================== 数值实现细节 ======================
  *
  *   - EMA 内部状态 ema_milli_mm 以 0.001 mm 为单位存储，避免整数除法
  *     累积截断误差；输出时四舍五入到 mm。
  *   - 中值排序在局部栈数组 v[N] 上做插入排序，不占用实例 RAM；
- *     N≤5 时排序开销为常数级。
- *   - 所有运算为纯整数，不依赖 libm/HAL，可在 20 Hz 主循环直接调用。
+ *     N≤3 时排序开销为常数级。
+ *   - 所有运算为纯整数，不依赖 libm/HAL，可在 50 Hz 主循环直接调用。
  *
- * ====================== 延迟构成（20 Hz，T=50 ms） ======================
+ * ====================== 延迟构成（50 Hz，T=20 ms） ======================
  *
- *   中值固定延迟：(N−1)/2 = 2 帧 = 100 ms（不可压缩）
- *   EMA 指数滞后：τ ≈ 140 ms（α=0.30），阶跃 63% 用时
+ *   中值固定延迟：(N−1)/2 = 1 帧 = 20 ms（不可压缩）
+ *   EMA 指数滞后：τ ≈ 40 ms（α=0.80），阶跃 63% 用时
  *   首帧可用性：启动期用部分窗口中值，第 1 帧有效数据即有输出
  ******************************************************************************
  */
@@ -195,10 +194,10 @@ bool TofFilter_ZeroHere(TofFilter_t *f) {
 }
 
 /**
- * @brief 推入一帧原始测距值并推进滤波链（中值-5 → EMA）
+ * @brief 推入一帧原始测距值并推进滤波链（中值-3 → EMA）
  * @param  raw_mm       原始距离（mm）；range_status 传感器状态（0 = 有效）
  * @retval true = 本帧有效并已更新输出；false = 被拒（状态非 0），输出保持
- * @note   调用周期须与传感器帧率一致（本工程 20Hz）
+ * @note   调用周期须与传感器帧率一致（本工程 50Hz）
  */
 bool TofFilter_Update(TofFilter_t *f, int16_t raw_mm, int8_t range_status) {
 	int16_t med;
@@ -241,7 +240,7 @@ bool TofFilter_Update(TofFilter_t *f, int16_t raw_mm, int8_t range_status) {
 /**
  * @brief 相对零点的位置（0.1cm）
  * @param f 滤波器实例
- * @retval (零点值 - 滤波值) × TOF_POS_SIGN；无有效输出时为 0，饱和到 int16 范围
+ * @retval 滤波值 − 零点值（0.1cm，远离传感器为正）；无有效输出时为 0，饱和到 int16 范围
  */
 int16_t TofFilter_GetCmX10(const TofFilter_t *f) {
 	int32_t v;
@@ -249,7 +248,7 @@ int16_t TofFilter_GetCmX10(const TofFilter_t *f) {
 	if (f == 0 || !f->has_output) {
 		return 0;
 	}
-	v = -((int32_t) f->last_filt_mm - (int32_t) f->zero_mm) * TOF_POS_SIGN;
+	v = (int32_t) f->last_filt_mm - (int32_t) f->zero_mm;
 	if (v > 32767) {
 		v = 32767;
 	} else if (v < -32768) {

@@ -8,7 +8,9 @@
  *   DIR  方向  PA2（Motor_direction_Pin，推挽输出）
  *   EN   使能  PA1（Motor_enabled_Pin，推挽输出，D36A 高电平使能）
  *
- * 本模块只负责电机：频率限幅 / 死区 / 斜率限制 / 换向安全 + PWM 与 GPIO 下发。
+ * 本模块只负责电机：PWM 与 GPIO 下发、换向安全。
+ * 频率幅值不限幅：闭环由 Motor_SetAngle 内的 PID 输出限幅决定，
+ * 开环按调用方给定值直接下发。
  * 位置限幅不在本模块：由调用方（main.c ISR）按相对计数基准在下发前钳 0，
  * 编码器计数、Z 校准、掉电保存都在 encoder.c。
  *
@@ -32,15 +34,6 @@ extern "C" {
 /* D36A 出厂 16 细分：200 步/圈 × 16 = 3200 STEP 脉冲/圈；改 DIP 细分须同步改 */
 #define MOTOR_PULSES_PER_REV 3200u
 
-/* 频率限幅（Hz）：|freq| < MIN 视为停止（脉冲过疏只会引起抖动）；
- * MAX 按电机矩频特性约束（1kHz≈18.75rpm，2kHz≈37.5rpm） */
-#define MOTOR_FREQ_MIN_HZ 0	   /* 0Hz 最小频率 */
-#define MOTOR_FREQ_MAX_HZ 2000 /* 2kHz 最大频率 */
-
-/* 斜率限制：每拍频率变化量上限（Hz/拍）。50Hz 调用下 100Hz/拍 = 5kHz/s²，
- * 频率平滑渐变是防失步的核心——步进电机对频率阶跃敏感 */
-#define MOTOR_SLEW_HZ_PER_STEP 10 /* 100Hz/拍 最大频率变化量 */
-
 /* 方向电平定义：正转/反转 到 PA2 的实际电平。
  * 历史记录（2026-10-27）：多次对调后仍出现"固件未动、方向再次反转"的间歇现象，
  * 已怀疑 PA2 浮空 / 编码器 A/B 松动 / 电机相线接触不良，接线根因尚未闭环。
@@ -52,38 +45,12 @@ extern "C" {
 /* TIM2 计数时钟分频校验值：PSC=71 → 1MHz（须与 CubeMX 中 TIM2.Prescaler 一致） */
 #define MOTOR_TIM_PSC 71u /* 72 分频 */
 
-/* ==================== 核心决策状态机（纯软件，无硬件依赖） ================ */
-
-typedef struct {
-	int32_t cur_freq; /* 当前实际输出的带符号频率（Hz），0 = 脉冲停止 */
-	bool	dir_cw;	  /* 当前 DIR 电平（true = 正转方向） */
-} MotorSm_t;
-
-typedef struct {
-	int32_t out_freq;	 /* 本拍应输出的带符号频率（Hz） */
-	bool	dir_cw;		 /* 本拍 DIR 电平 */
-	bool	pulse_en;	 /* 本拍是否输出脉冲 */
-	bool	dir_changed; /* 本拍发生换向（只建立 DIR 电平不发脉冲，
-						  * 满足 D36A "换向后 ≥1ms 再发脉冲"时序） */
-} MotorCmd_t;
-
-/**
- * @brief 状态机初始化（上电安全态：输出 0，方向默认正转）
- * @param sm 状态机实例（由调用方持有）
- */
-void MotorSm_Init(MotorSm_t *sm);
-
-/**
- * @brief 核心决策：带符号目标频率 → 本拍输出决策
- * @param sm        状态机实例
- * @param target_hz 目标频率（Hz，带符号）
- * @retval 本拍输出决策（见 MotorCmd_t）
- * @note  处理顺序：限幅(±MAX) → 死区(|f|<MIN 视为 0) → 斜率限制(每拍 ≤SLEW)
- *        → 换向安全（方向不同时本拍输出 0、只切 DIR、dir_changed=true）
- * @note  以固定周期调用（本工程 50Hz），斜率以"每拍最大变化量"表达；
- *        纯软件逻辑，无硬件依赖，可主机侧单测
- */
-MotorCmd_t MotorSm_Update(MotorSm_t *sm, int32_t target_hz);
+/* ==================== 内环角度控制周期（与测距同拍 50Hz） =====================
+ * MOTOR_MEAS_PERIOD_MS 是测距/滤波节拍；内环角度控制每个测距周期执行一次，
+ * 保证每个新滤波值当拍就参与控制。外环位置控制为 10Hz，由 main.c 5 分频。
+ * main.c 的测距节拍须与本定义一致。 */
+#define MOTOR_MEAS_PERIOD_MS 20u                    /* 测距周期（ms，固定基准） */
+#define MOTOR_CTRL_PERIOD_MS MOTOR_MEAS_PERIOD_MS   /* 角度控制周期 = 20ms（50Hz） */
 
 /* ============================ 驱动接口 ==================================== */
 
@@ -101,24 +68,41 @@ void Motor_Init(void);
 void Motor_SetEnabled(bool enable);
 
 /**
- * @brief 设定带符号目标频率（Hz），以固定周期调用（本工程 50Hz）
- * @param freq_hz >0 正转；<0 反转；0 停止脉冲
- * @note  脉冲启停、方向切换、ARR 更新均由本函数按 MotorSm 决策自动完成；
- *        位置限幅由调用方在下发前完成（本函数不做位置判断）
+ * @brief 设定带符号目标频率（Hz），直接驱动 PWM/DIR
+ * @param freq_hz >0 正转；<0 反转；0 停止脉冲（频率幅值不做限幅）
+ * @note  直接写 TIM2 PWM 频率与 DIR 电平；换向拍只切 DIR、停脉冲
+ *        （D36A 换向后 ≥1ms 再发脉冲，调用周期需 ≥1ms）。
+ *        位置限幅由调用方在下发前完成（本函数不做位置判断）。
  */
 void Motor_SetTargetFreq(int32_t freq_hz);
 
 /**
+ * @brief 设定目标角度（编码器计数）：角度环位置式 PID → 直接驱动 PWM/DIR
+ * @param target_cnt 目标编码器计数值（相对零点）
+ * @param ctrl_p     角度环比例增益（Hz / 编码器计数偏差）：Out = Kp × 角度误差，
+ *                   等价于一个控制周期的脉冲数 = Out × MOTOR_CTRL_PERIOD_MS / 1000
+ * @note  内环由调用方每个测距周期（MOTOR_CTRL_PERIOD_MS = 20ms，50Hz）调用一次。
+ *        位置式 PID：Target=目标角度, Actual=Encoder_Read(), Out=频率(Hz)。
+ *        PID 输出直接写 TIM2 PWM 频率与 DIR 电平，保证定角度响应速度；
+ *        换向拍只切 DIR、停脉冲（D36A 换向后 ≥1ms 再发脉冲）。
+ *        方向由 motor.c 的 MOTOR_ENC_HZ_SIGN 决定（1 = freq>0 使 enc 增大，0 = 相反）。
+ */
+void Motor_SetAngle(int32_t target_cnt, float ctrl_p);
+
+/**
+ * @brief 读取角度环 PID 算出的目标频率（Hz，带符号）
+ */
+int32_t Motor_GetAngleTargetFreq(void);
+
+/**
  * @brief 当前实际输出的带符号脉冲频率（Hz，0 = 停止）
- * @retval 经斜率限制后的真实输出；加减速/换向过程中与目标值不同
+ * @retval 最近一次下发的频率（带符号）；换向/停止拍为 0
  */
 int32_t Motor_GetPulseFreqHz(void);
 
-/* ===================== 低层 PWM 原语（绕过状态机，直接操控 TIM2） ==========
- * 供需要最简控制逻辑的场景使用：测距→频率 直接映射，不经斜率/换向状态机。
- * 注意：调用方需自行处理方向、启停顺序与频率限幅（≥ MOTOR_FREQ_MIN_HZ）。 */
+/* ===================== 低层 PWM 原语（直接操控 TIM2） ====================== */
 
-/** @brief 设定 STEP 脉冲频率（Hz，≥ MOTOR_FREQ_MIN_HZ），占空比 ≈50% */
+/** @brief 设定 STEP 脉冲频率（Hz），占空比 ≈50% */
 void PwmSetFreq(uint32_t freq_hz);
 
 /** @brief 启动 STEP 脉冲输出（幂等） */

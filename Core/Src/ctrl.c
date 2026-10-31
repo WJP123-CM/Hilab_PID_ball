@@ -21,7 +21,6 @@
 #define HOLD_PID_KD       0.0f
 #define HOLD_PID_ILIM     50.0f  /* 积分限幅（Hz） */
 #define HOLD_OUT_LIMIT    400.0f /* 输出限幅（Hz） */
-#define HOLD_DEADBAND_CNT 3.0f   /* 误差死区（计数） */
 
 /* ===================== 外环：小球位置闭环 ===================== */
 #define BALL_PID_KP        2.0f   /* 计数 / 0.1cm */
@@ -29,12 +28,11 @@
 #define BALL_PID_KD        0.0f
 #define BALL_PID_ILIM      100.0f /* 积分限幅（计数） */
 #define BALL_PID_OUT_LIM   400.0f /* 外环输出限幅（计数） */
-#define BALL_PID_DEADBAND  3.0f   /* 死区 ±0.3cm */
 #define BALL_LOSS_MAX_FRAMES 10u  /* ToF 连续无效 0.5s → 外环回中 */
 
 /* 符号链（2026-10-30，ENC_DIR_SIGN=+1 时推导）：
  *   freq>0 → enc↓；target>fb 需 freq<0 使 enc↑ → HOLD_PID_SIGN=-1
- *   pos>0 需 s_ball_ofs_cnt>0 → PID_Update(0,pos>0) 为负 → BALL_PID_SIGN=+1
+ *   pos>0 需 s_ball_ofs_cnt>0 → ball.Out 为负 → BALL_PID_SIGN=+1
  * 改符号必须与 encoder.h 的 ENC_DIR_SIGN 同步（ENC_POS_DIR_SIGN 已于
  * 2026-10-31 随 motor.c abs 软限位一并删除，限幅统一在 main.c ISR）。 */
 #define HOLD_PID_SIGN (-1)
@@ -58,14 +56,14 @@ static volatile uint8_t  s_key_estop     = 0; /* 急停锁存 */
 static int32_t        s_store_abs_ref   = 0; /* 掉电保存基准 */
 
 static const PIDCfg_t s_hold_cfg = {
-	.kp = HOLD_PID_KP, .ki = HOLD_PID_KI, .kd = HOLD_PID_KD,
-	.out_min = -HOLD_OUT_LIMIT, .out_max = HOLD_OUT_LIMIT,
-	.i_limit = HOLD_PID_ILIM, .deadband = HOLD_DEADBAND_CNT, .d_alpha = 1.0f,
+	.Kp = HOLD_PID_KP, .Ki = HOLD_PID_KI, .Kd = HOLD_PID_KD,
+	.OutMin = -HOLD_OUT_LIMIT, .OutMax = HOLD_OUT_LIMIT,
+	.i_limit = HOLD_PID_ILIM,
 };
 static const PIDCfg_t s_ball_cfg = {
-	.kp = BALL_PID_KP, .ki = BALL_PID_KI, .kd = BALL_PID_KD,
-	.out_min = -BALL_PID_OUT_LIM, .out_max = BALL_PID_OUT_LIM,
-	.i_limit = BALL_PID_ILIM, .deadband = BALL_PID_DEADBAND, .d_alpha = 1.0f,
+	.Kp = BALL_PID_KP, .Ki = BALL_PID_KI, .Kd = BALL_PID_KD,
+	.OutMin = -BALL_PID_OUT_LIM, .OutMax = BALL_PID_OUT_LIM,
+	.i_limit = BALL_PID_ILIM,
 };
 
 /* ===================== 实现 ===================== */
@@ -104,7 +102,6 @@ void Ctrl_SetMode(uint8_t mode) {
 }
 
 void Ctrl_OuterTick(void) {
-	float out;
 	if (s_ctrl_mode != 2u) return;
 	if (g_tof.range_status != 0) {
 		if (s_tof_lost_n < 255u) s_tof_lost_n++;
@@ -115,8 +112,10 @@ void Ctrl_OuterTick(void) {
 		return;
 	}
 	s_tof_lost_n = 0;
-	out = BALL_PID_SIGN * PID_Update(&s_ball_pid, 0.0f, (float)g_tof.pos_cm_x10);
-	s_ball_ofs_cnt = (int16_t)out;
+	s_ball_pid.Target = 0.0f;
+	s_ball_pid.Actual = (float)g_tof.pos_cm_x10;
+	PID_Update(&s_ball_pid);
+	s_ball_ofs_cnt = (int16_t)(BALL_PID_SIGN * s_ball_pid.Out);
 }
 
 void Ctrl_InnerTick(void) {
@@ -125,7 +124,10 @@ void Ctrl_InnerTick(void) {
 	if (s_ctrl_mode == 0u) return;
 	target = (s_ctrl_mode == 2u) ? (float)s_ball_ofs_cnt : 0.0f;
 	fb = Encoder_Read();
-	f_out = HOLD_PID_SIGN * PID_Update(&s_hold_pid, target, (float)fb);
+	s_hold_pid.Target = target;
+	s_hold_pid.Actual = (float)fb;
+	PID_Update(&s_hold_pid);
+	f_out = HOLD_PID_SIGN * s_hold_pid.Out;
 #if MOTOR_CONTROL_ENABLE
 	Motor_SetTargetFreq((int32_t)f_out);
 #else

@@ -55,7 +55,7 @@ void Error_Handler(void);
 /* USER CODE BEGIN EFP */
 /**
  * @brief 开环频率覆盖入口（串口 F 命令）：进入/退出开环直驱模式
- * @param freq_hz 带符号目标频率（Hz，内部钳位）；0 = 退出回闭环
+ * @param freq_hz 带符号目标频率（Hz，直接下发，不做限幅）；0 = 退出回闭环
  */
 void App_SetOpenloopFreq(int32_t freq_hz);
 /* USER CODE END EFP */
