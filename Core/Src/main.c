@@ -47,24 +47,17 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-/* 调度周期：测距固定为 MOTOR_MEAS_PERIOD_MS，角度控制 = 5×测距周期
- * （motor.h 定义 MOTOR_MEAS_PERIOD_MS / MOTOR_CTRL_PERIOD_MS） */
-#define MEAS_PERIOD_MS MOTOR_MEAS_PERIOD_MS	 /* 测距/滤波：20Hz（固定基准） */
-#define CTRL_PERIOD_MS (5u * MEAS_PERIOD_MS) /* 角度控制：10Hz，=5×测距 */
-#define CMD_PERIOD_MS  100u					 /* 串口命令：10Hz（主循环执行） */
-#define OLED_PERIOD_MS 200u					 /* OLED 刷新：5Hz（主循环执行） */
+/* 调度周期：测距/滤波/位置闭环同拍 20ms（50Hz，单环） */
+#define MEAS_PERIOD_MS MOTOR_MEAS_PERIOD_MS /* 测距/滤波/位置闭环：50Hz */
+#define CMD_PERIOD_MS  100u					/* 串口命令：10Hz（主循环执行） */
+#define OLED_PERIOD_MS 200u					/* OLED 刷新：5Hz（主循环执行） */
 
-/* 内环角度 PID 比例增益（Hz / 编码器计数偏差），写入 s_angle_pid.Kp；
- * Ki/Kd 在 Motor_Init 中初始化为 0，可按需在线整定。方向负号在 Motor_SetAngle 内处理。
- * 注意：外环输出被 OutMin/OutMax 钳在 ±200 计数，故内环可达最大频率
- * = BALL_CTRL_P × 200；取 1.0 时满偏差正好 200Hz（低于 1.0 会卡在电机死区，转不动）。 */
-#define BALL_CTRL_P 1.0f
-
-/* 距离 x ↔ 编码器 e 极性（外环唯一方向开关）：
- *   1 = 正相关：编码器计数 e 增大时小球距离 x 增大
- *   0 = 负相关：编码器计数 e 增大时小球距离 x 减小 */
-#define BALL_X_ENC_SIGN 1
-#define BALL_X_ENC_DIR	(BALL_X_ENC_SIGN ? 1.0f : -1.0f)
+/* 单环位置 PID：小球位置(pos_cm_x10) → 脉冲频率(Hz)，每个测距拍推进一次。
+ * 方向开关（唯一）：1 = 正相关（pos>0 时 freq>0），0 = 负相关。
+ * Target=0 时 Out = Kp×(0−pos)，故正相关对应 Kp 取负号。 */
+#define BALL_POS_HZ_SIGN 1
+#define BALL_POS_HZ_DIR	 (BALL_POS_HZ_SIGN ? -1.0f : 1.0f)
+#define BALL_KP_HZ_PER_CM_X10 4.0f /* Hz / 0.1cm 偏差（pos=30 即 3cm 时 120Hz） */
 
 /* 电机使能：0=不驱动电机（脱机调参），1=正常输出 */
 #define MOTOR_CONTROL_ENABLE 1
@@ -85,7 +78,6 @@
 static volatile uint8_t s_meas_tick	 = 0; /* 测距/滤波/VOFA 20ms */
 static volatile uint8_t s_cmd_tick   = 0; /* 串口命令解析 100ms */
 static volatile uint8_t s_oled_tick  = 0; /* OLED 刷新 200ms */
-static uint8_t			s_ctrl_div	 = 0; /* 测距→控制 5 分频（每 5 个测距拍推进一次角度控制） */
 /* 主循环心跳：1 = 最近 1s 内主循环至少跑过一圈；ISR 据此决定是否喂狗 */
 static volatile uint8_t s_loop_alive = 0;
 
@@ -198,16 +190,14 @@ int main(void)
 	Encoder_Init();
 	(void) Encoder_StoreRestore();
 
-	/* 位置外环 PID 初始化：小球位置(pos) → 目标编码器角度(计数)；
-	 * 增益符号由 BALL_X_ENC_SIGN 统一决定（1 正相关 / 0 负相关），
-	 * 输出限幅由 OutMin/OutMax 决定，可在线改。
-	 * 内环角度→频率 在 motor.c 内部完成（Motor_SetAngle）。 */
-	s_ball_pid.Kp	   = BALL_X_ENC_DIR * 5.0f; /* 编码器计数 / 0.1cm 偏差（1000 会被 ±200 钳成 bang-bang） */
-	s_ball_pid.Ki	   = BALL_X_ENC_DIR * 0.1f;
-	s_ball_pid.Kd	   = BALL_X_ENC_DIR * 0.5f;
-	s_ball_pid.OutMin  = -200.0f; /* 目标角度下限（编码器计数） */
-	s_ball_pid.OutMax  = 200.0f;  /* 目标角度上限（编码器计数） */
-	s_ball_pid.i_limit = 100.0f;  /* 0 = 不限幅积分（Ki=0 时无影响） */
+	/* 单环位置 PID 初始化：小球位置(pos_cm_x10) → 脉冲频率(Hz)；
+	 * 增益符号由 BALL_POS_HZ_SIGN 统一决定，输出限幅 ±120Hz（实测 400Hz 会失步）。 */
+	s_ball_pid.Kp	   = BALL_POS_HZ_DIR * BALL_KP_HZ_PER_CM_X10;
+	s_ball_pid.Ki	   = 0.0f;
+	s_ball_pid.Kd	   = 0.0f;
+	s_ball_pid.OutMin  = -120.0f;
+	s_ball_pid.OutMax  = 120.0f;
+	s_ball_pid.i_limit = 0.0f; /* 0 = 不限幅积分（Ki=0 时无影响） */
 	PID_Reset(&s_ball_pid);
 
 #if MOTOR_CONTROL_ENABLE
@@ -237,32 +227,20 @@ int main(void)
 		/* 主循环心跳：任何一步卡死超过 1 个 IWDG 周期都会停止喂狗并复位 */
 		s_loop_alive = 1;
 
-		/* 测距 50Hz / 角度控制 10Hz（=5×测距）：测距拍固定，控制拍跟随 */
+		/* 测距/滤波/单环位置闭环：同一个 50Hz 拍推进 */
 		if (s_meas_tick) {
 			s_meas_tick = 0;
 			Tof_Tick(&g_tof_filter); /* 测距/滤波每 MEAS_PERIOD_MS */
 
-			/* 角度控制每 CTRL_PERIOD_MS = 5×MEAS_PERIOD_MS 推进一次 */
-			if (++s_ctrl_div >= 5u) {
-				s_ctrl_div = 0;
-
-				/* 位置外环：PID_t 标准接口，先写 Target/Actual 再调 PID_Update，
-				 * 计算结果 s_ball_pid.Out 为目标编码器角度（计数）；
-				 * 内环角度→频率 由 Motor_SetAngle 内部按误差/周期直接换算。
-				 * F 命令开环时直接设频率（绕过角度环）。 */
-				{
-					s_ball_pid.Target = 0.0f;
-					s_ball_pid.Actual = (float) g_tof.pos_cm_x10;
-					PID_Update(&s_ball_pid);
-				}
-			}
-			/* F 命令开环：直接下发带符号频率（绕过角度环），用于钉死方向链；
-			 * F0 退出回内环定角度。开环拍不做任何限幅。 */
 			if (s_openloop_en) {
+				/* F 命令开环：直接下发带符号频率（绕过位置 PID），用于钉死方向链 */
 				Motor_SetTargetFreq(s_openloop_freq);
 			} else {
-				//	Motor_SetAngle((int32_t) s_ball_pid.Out, BALL_CTRL_P);
-				Motor_SetAngle(0, BALL_CTRL_P);
+				/* 单环位置 PID：Target=0, Actual=小球位置(0.1cm)，Out=脉冲频率(Hz) */
+				s_ball_pid.Target = 0.0f;
+				s_ball_pid.Actual = (float) g_tof.pos_cm_x10;
+				PID_Update(&s_ball_pid);
+				Motor_SetTargetFreq((int32_t) s_ball_pid.Out);
 			}
 			/* VOFA 遥测：ch0=filt_mm / ch1=pulse_freq_hz / ch2=enc_cnt */
 			{
