@@ -54,7 +54,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/tof_filter.c # ToF 滤波（中值-5 + EMA，整数运算）
     Core/Src/pid.c        # 单环位置式 PID
     # 应用层模块（无硬件）
-    Core/Src/key.c        # PA0 按键消抖 + 事件队列
+    Core/Src/key.c        # PA0 按键消抖 + 0/1 状态
     Core/Src/cmd.c        # 上位机行协议：A/Z/P/I/D/R 命令解析
     # OLED (SSD1306) driver
     Middleware/OLED/ssd1306.c

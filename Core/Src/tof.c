@@ -47,7 +47,8 @@ static VL53L1_Dev_t s_dev; /* 设备句柄 */
  * @note  仅上电初始化阶段调用；本层不做提示输出/停机，显示与停机由 main.c 决定
  */
 /**
- * @brief 填入默认传感器配置（8×8 ROI / SHORT / 16ms 预算 / 20ms 周期 / 串扰关）
+ * @brief 填入默认传感器配置（8×8 ROI / SHORT / 16ms 预算 / 20ms 周期 / 串扰关），cfg的英文为 TofSensorCfg_t，中文为
+ * 传感器测距参数结构体
  */
 void Tof_GetDefaultSensorCfg(TofSensorCfg_t *cfg) {
 	if (cfg == 0) {

@@ -46,11 +46,11 @@ extern "C" {
 #define MOTOR_TIM_PSC 71u /* 72 分频 */
 
 /* ==================== 内环角度控制周期（与测距同拍 50Hz） =====================
- * MOTOR_MEAS_PERIOD_MS 是测距/滤波节拍；内环角度控制每个测距周期执行一次，
+ * MOTOR_OUT_PERIOD_MS 是测距/滤波节拍；内环角度控制每个测距周期执行一次，
  * 保证每个新滤波值当拍就参与控制。外环位置控制为 10Hz，由 main.c 5 分频。
  * main.c 的测距节拍须与本定义一致。 */
-#define MOTOR_MEAS_PERIOD_MS 20u                    /* 测距周期（ms，固定基准） */
-#define MOTOR_CTRL_PERIOD_MS MOTOR_MEAS_PERIOD_MS   /* 角度控制周期 = 20ms（50Hz） */
+#define MOTOR_OUT_PERIOD_MS	 20u				 /* 测距周期（ms，固定基准） */
+#define MOTOR_CTRL_PERIOD_MS MOTOR_OUT_PERIOD_MS /* 角度控制周期 = 20ms（50Hz） */
 
 /* ============================ 驱动接口 ==================================== */
 

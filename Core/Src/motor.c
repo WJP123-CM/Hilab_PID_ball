@@ -24,16 +24,16 @@
 
 /* ==================== 硬件下发（TIM2 PWM / GPIO） ======================== */
 
-static bool		s_running = false; /* STEP 脉冲输出状态（内部启停幂等） */
-static int32_t	s_cur_freq	  = 0;	   /* 最近一次下发的带符号频率（Hz，供遥测） */
-static bool		s_last_dir_cw = true;  /* 最近一次 DIR 方向（换向安全用） */
+static bool	   running	   = false; /* STEP 脉冲输出状态（内部启停幂等） */
+static int32_t cur_freq	   = 0;		/* 最近一次下发的带符号频率（Hz，供遥测） */
+static bool	   last_dir_cw = true;	/* 最近一次 DIR 方向（换向安全用） */
 
 /* ---- 角度环位置式 PID（编码器计数 → 脉冲频率） ----
  * Target=目标角度(计数), Actual=Encoder_Read(), Out=频率(Hz)。
  * 方向约定：编码器 e ↔ freq 的极性由 MOTOR_ENC_HZ_SIGN 决定。
- * s_angle_target_freq 供遥测；s_last_dir_cw 用于换向安全（换向后本拍不发脉冲）。 */
-static PID_t   s_angle_pid;
-static int32_t s_angle_target_freq = 0;
+ * encoder_target_freq 供遥测；last_dir_cw 用于换向安全（换向后本拍不发脉冲）。 */
+static PID_t   encoder_pid;
+static int32_t encoder_target_freq = 0;
 
 /**
  * @brief 校验 TIM2 分频假设、设定 STEP 占空比
@@ -49,20 +49,19 @@ void Motor_Init(void) {
 
 	/* STEP 占空比 ≈50%：用 (ARR+1)/2 动态计算，远大于驱动芯片对 STEP
 	 * 脉宽的最低要求（≥2µs） */
-	__HAL_TIM_SET_COMPARE(&htim2, STEP_CHANNEL, (__HAL_TIM_GET_AUTORELOAD(&htim2) + 1u) / 2u);
+	__HAL_TIM_SET_COMPARE(&htim2, STEP_CHANNEL,
+						  (__HAL_TIM_GET_AUTORELOAD(&htim2) + 1u) / 2u); // 设定占空比为 50%：(ARR+1)/2
 
 	/* 角度环 PID 初始化：编码器计数 → 脉冲频率，位置式 PID 直接定角度。
 	 * Kp 由调用方（ctrl_p）每拍写入；Ki/Kd 起步为 0，可在线整定。
 	 * 输出限幅 ±200Hz（远低于电机矩频上限），i_limit=0 不限积分。 */
-	s_angle_pid.Kp		= 0.0f;
-	s_angle_pid.Ki		= 0.0f;
-	s_angle_pid.Kd		= 0.0f;
-	s_angle_pid.OutMin	= -200.0f;
-	s_angle_pid.OutMax	= 200.0f;
-	s_angle_pid.i_limit = 0.0f;
-	PID_Reset(&s_angle_pid);
-	s_angle_target_freq = 0;
-	s_last_dir_cw		= true;
+
+	encoder_target_freq = 0;
+	/* 上电 DIR 由 gpio.c 复位为低电平（= MOTOR_DIR_CCW），last_dir_cw 必须与该
+	 * 电平一致，否则首拍 freq>0 时 cw==last_dir_cw 不写 DIR，脉冲会按反方向
+	 * 跑，速度环变成正反馈（2026-11-02 实测 Out 恒饱和、编码器越跑越远） */
+	Motor_SetDir(false);
+	last_dir_cw = false;
 	/* 上电安全态：不使能电机、不输出脉冲（PA1/PA2 已由 gpio.c 初始化为低） */
 }
 
@@ -81,13 +80,13 @@ void Motor_SetEnabled(bool enable) {
  *        HAL 失败进 Error_Handler
  */
 void PwmStart(void) {
-	if (s_running) {
+	if (running) {
 		return;
 	}
 	if (HAL_TIM_PWM_Start(&htim2, STEP_CHANNEL) != HAL_OK) {
 		Error_Handler();
 	}
-	s_running = true;
+	running = true;
 }
 
 /**
@@ -95,13 +94,13 @@ void PwmStart(void) {
  * @note  已停止时直接返回；HAL 失败进 Error_Handler
  */
 void PwmStop(void) {
-	if (!s_running) {
+	if (!running) {
 		return;
 	}
 	if (HAL_TIM_PWM_Stop(&htim2, STEP_CHANNEL) != HAL_OK) {
 		Error_Handler();
 	}
-	s_running = false;
+	running = false;
 }
 
 /**
@@ -115,15 +114,15 @@ void PwmStop(void) {
  *        TIM2 为 16 位定时器，1MHz 时基下频率下限 16Hz（ARR≤65535）。
  */
 void PwmSetFreq(uint32_t freq_hz) {
-	uint32_t arr = (1000000u / freq_hz) - 1u;
+	uint32_t arr = (1000000u / freq_hz) - 1u; // 计算 ARR 值，ARR+1=周期时间
 	if (arr > 65535u) {
 		arr = 65535u; /* 16 位 ARR 保护：<16Hz 钳到 16Hz，防 ARR/CCR 截断 */
 	}
 	if (arr == (uint32_t) __HAL_TIM_GET_AUTORELOAD(&htim2)) {
 		return; /* 频率未变：不打断进行中的 PWM 周期 */
 	}
-	__HAL_TIM_SET_COUNTER(&htim2, 0);
-	__HAL_TIM_SET_AUTORELOAD(&htim2, arr);
+	__HAL_TIM_SET_COUNTER(&htim2, 0);							  // 清 CNT，防新 ARR < 当前 CNT 时回绕
+	__HAL_TIM_SET_AUTORELOAD(&htim2, arr);						  // 写 ARR，ARPE=0 立即生效
 	__HAL_TIM_SET_COMPARE(&htim2, STEP_CHANNEL, (arr + 1u) / 2u); /* 维持 ≈50% 占空比 */
 }
 
@@ -135,20 +134,20 @@ void PwmSetFreq(uint32_t freq_hz) {
  *        位置限幅由调用方在下发前完成，本函数不做位置判断。
  */
 void Motor_SetTargetFreq(int32_t freq_hz) {
-	s_cur_freq = freq_hz;
+	cur_freq = freq_hz;
 
 	if (freq_hz == 0) {
 		PwmStop(); /* 目标 0：停脉冲，保持 DIR 与绕组锁定 */
 		return;
 	}
 
-	bool cw = (freq_hz > 0);
+	bool cw = (freq_hz > 0); // cw是 "clockwise" 的缩写，中文 "顺时针"
 	/* 换向安全：方向变化时本拍只切 DIR、不发脉冲（下一拍从新方向启动） */
-	if (cw != s_last_dir_cw) {
+	if (cw != last_dir_cw) {
 		Motor_SetDir(cw);
 		PwmStop();
-		s_cur_freq	  = 0;
-		s_last_dir_cw = cw;
+		cur_freq	= 0;
+		last_dir_cw = cw;
 		return;
 	}
 
@@ -161,7 +160,7 @@ void Motor_SetTargetFreq(int32_t freq_hz) {
  * @note  供 VOFA 遥测；换向/停止拍返回 0
  */
 int32_t Motor_GetPulseFreqHz(void) {
-	return s_cur_freq;
+	return cur_freq;
 }
 
 /**
@@ -177,49 +176,48 @@ int32_t Motor_GetPulseFreqHz(void) {
  *        方向由 MOTOR_ENC_HZ_SIGN 决定：1 = freq>0 使 enc 增大，0 = 相反。
  */
 void Motor_SetAngle(int32_t target_cnt, float ctrl_p) {
-	s_angle_pid.Kp	   = 2.0f; /* 比例增益由调用方每拍给定，便于在线整定 */
-	s_angle_pid.Target = (float) target_cnt;
-	s_angle_pid.Actual = (float) Encoder_Read();
-	PID_Update(&s_angle_pid);
+	encoder_pid.Target = (float) target_cnt;
+	encoder_pid.Actual = (float) Encoder_Read();
+	PID_Update(&encoder_pid);
 
 	/* Out>0 = 需要编码器计数增大；按 MOTOR_ENC_HZ_SIGN 换算成带符号频率 */
 	// int32_t freq		= (MOTOR_ENC_HZ_SIGN != 0) ? (int32_t) s_angle_pid.Out : -(int32_t) s_angle_pid.Out;
-	int32_t freq		= (int32_t) s_angle_pid.Out;
-	s_angle_target_freq = freq;
+	int32_t freq		= (int32_t) encoder_pid.Out;
+	encoder_target_freq = freq;
 
 	/* 误差为零附近：停脉冲，绕组保持锁定（静态力矩定角度） */
 	if (freq == 0) {
 		PwmStop();
-		s_cur_freq = 0; /* 同步遥测：实际输出 0 */
+		cur_freq = 0; /* 同步遥测：实际输出 0 */
 		return;
 	}
 
 	bool cw = (freq > 0);
 	/* 换向安全：方向变化时本拍只切 DIR、不发脉冲（下一拍从新方向启动） */
-	if (cw != s_last_dir_cw) {
+	if (cw != last_dir_cw) {
 		Motor_SetDir(cw);
 		PwmStop();
-		s_cur_freq	  = 0;
-		s_last_dir_cw = cw;
+		cur_freq	= 0;
+		last_dir_cw = cw;
 		return;
 	}
 
 	/* 同方向：直接设定 PWM 频率并启动 */
 	PwmSetFreq((uint32_t) (freq > 0 ? freq : -freq));
 	PwmStart();
-	s_cur_freq = freq; /* 同步遥测：实际输出频率 */
+	cur_freq = freq; /* 同步遥测：实际输出频率 */
 }
 
 /**
  * @brief 读取角度环 PID 算出的目标频率（Hz，带符号）
  */
-int32_t Motor_GetAngleTargetFreq(void) {
-	return s_angle_target_freq;
+int32_t Motor_GetEncoderTargetFreq(void) {
+	return encoder_target_freq;
 }
 
 /* ===================== 低层 PWM 原语（直接操控 TIM2） ====================== */
 
-void Motor_SetDir(bool cw) {
+void Motor_SetDir(bool cw) { // dir是 "direction" 的缩写，中文 "方向"
 	HAL_GPIO_WritePin(Motor_direction_GPIO_Port, Motor_direction_Pin,
 					  (cw ? MOTOR_DIR_CW : MOTOR_DIR_CCW) ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }

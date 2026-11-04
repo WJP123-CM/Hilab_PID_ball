@@ -1,0 +1,450 @@
+{
+  "sha": "14c6032542cabf068901d36976b86193d965ea14",
+  "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/trees/14c6032542cabf068901d36976b86193d965ea14",
+  "tree": [
+    {
+      "path": "README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "038039167f8264322894f929c59f91a09ba553da",
+      "size": 4439,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/038039167f8264322894f929c59f91a09ba553da"
+    },
+    {
+      "path": "ball and beam model",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "81f0e18379cda20e9ff5aac5bcd92dd24616f01a",
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/trees/81f0e18379cda20e9ff5aac5bcd92dd24616f01a"
+    },
+    {
+      "path": "ball and beam model/6mm 20-teeth gear.SLDPRT",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7721f910548c075bb71935b2f4b3bfb3f6fa1b4b",
+      "size": 390963,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/7721f910548c075bb71935b2f4b3bfb3f6fa1b4b"
+    },
+    {
+      "path": "ball and beam model/8mm 60-teeth gear.SLDPRT",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ebe2400aa4d40942227cc382e6bf05dd1965104f",
+      "size": 667023,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/ebe2400aa4d40942227cc382e6bf05dd1965104f"
+    },
+    {
+      "path": "ball and beam model/JGB37-520 motor.SLDPRT",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8764cb8f101d79d9a6f9061da561b490673c2abc",
+      "size": 395270,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/8764cb8f101d79d9a6f9061da561b490673c2abc"
+    },
+    {
+      "path": "ball and beam model/L298N driver.SLDPRT",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b25f0bda1986a2e19bb76a35c09bef5e8a2ddf78",
+      "size": 603187,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/b25f0bda1986a2e19bb76a35c09bef5e8a2ddf78"
+    },
+    {
+      "path": "ball and beam model/ball and beam assembly.SLDASM",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c800f03d4dc3bf4810ef67b6163e0d6b9d20e0e8",
+      "size": 1523061,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/c800f03d4dc3bf4810ef67b6163e0d6b9d20e0e8"
+    },
+    {
+      "path": "ball and beam model/ball bearing.SLDPRT",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "40aba8a3b7b1f6886db799627f77f986df8ba333",
+      "size": 179108,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/40aba8a3b7b1f6886db799627f77f986df8ba333"
+    },
+    {
+      "path": "ball and beam model/ball.SLDPRT",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9ed917017e7f614d066bb4cc2a5232e7113ade01",
+      "size": 106254,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/9ed917017e7f614d066bb4cc2a5232e7113ade01"
+    },
+    {
+      "path": "ball and beam model/bearing frame.SLDPRT",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "88ea46be23cea9d0e6172a8f061b7baf43a483d9",
+      "size": 278361,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/88ea46be23cea9d0e6172a8f061b7baf43a483d9"
+    },
+    {
+      "path": "ball and beam model/half guide.SLDPRT",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9f648387ac193de4302af0a3747c812a69e24e35",
+      "size": 428266,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/9f648387ac193de4302af0a3747c812a69e24e35"
+    },
+    {
+      "path": "ball and beam model/holder.SLDPRT",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f6fa4c25f9d362150be066bc9ffdcd70682d051f",
+      "size": 158164,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/f6fa4c25f9d362150be066bc9ffdcd70682d051f"
+    },
+    {
+      "path": "ball and beam model/lower pillar.SLDPRT",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "826b3144b9f222a518dbc2e98497f379d651aef1",
+      "size": 170163,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/826b3144b9f222a518dbc2e98497f379d651aef1"
+    },
+    {
+      "path": "ball and beam model/motor frame.SLDPRT",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "619706f62bc98d987534b23758110ec8af613c0d",
+      "size": 368876,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/619706f62bc98d987534b23758110ec8af613c0d"
+    },
+    {
+      "path": "ball and beam model/motor slider.SLDPRT",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b28d18e9c7aab9fc1598b1e658503b1d8eaa150f",
+      "size": 208807,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/b28d18e9c7aab9fc1598b1e658503b1d8eaa150f"
+    },
+    {
+      "path": "ball and beam model/mount.SLDPRT",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b78f722c7ef7ad1737d91abecbd0f6885b23a9dd",
+      "size": 211910,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/b78f722c7ef7ad1737d91abecbd0f6885b23a9dd"
+    },
+    {
+      "path": "ball and beam model/screws and nuts list",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "8b2fba19419daefc1583b81bf9ec367ef66a2625",
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/trees/8b2fba19419daefc1583b81bf9ec367ef66a2625"
+    },
+    {
+      "path": "ball and beam model/screws and nuts list/bearings 4 x DIN 912 M5x16, 4 x DIN 934 M5.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "size": 0,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "ball and beam model/screws and nuts list/driver 4 x DIN 912 M3x16, 12 x DIN 934 M3.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "size": 0,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "ball and beam model/screws and nuts list/gears 4 x DIN 913 M4x5.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "size": 0,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "ball and beam model/screws and nuts list/guide 2 x DIN 912 M4x16, 2 x DIN 934 M4.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "size": 0,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "ball and beam model/screws and nuts list/holder 1 x DIN 912 M4x16.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "size": 0,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "ball and beam model/screws and nuts list/holder 2 x DIN 912 M6x16.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "size": 0,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "ball and beam model/screws and nuts list/motor 4 x DIN 912 M3x12.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "size": 0,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "ball and beam model/screws and nuts list/mount 7 x DIN 912 M5x16, 7 x DIN 934 M5.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "size": 0,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "ball and beam model/screws and nuts list/pillar 2 x DIN 912 M5x16, 2 x DIN 934 M5.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "size": 0,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "ball and beam model/screws and nuts list/slider 4 x DIN 912 M4x16, 4 x DIN 934 M4.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "size": 0,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    {
+      "path": "ball and beam model/shaft.SLDPRT",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "656a2aacb260792043cc2623416ec8560a657214",
+      "size": 66063,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/656a2aacb260792043cc2623416ec8560a657214"
+    },
+    {
+      "path": "ball and beam model/timing belt.SLDPRT",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "44c17bc66632bea83deee8aebff1026938e9f66e",
+      "size": 55896,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/44c17bc66632bea83deee8aebff1026938e9f66e"
+    },
+    {
+      "path": "ball and beam model/upper pillar.SLDPRT",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5e19daeb9229af8bfe5f893c390131e01c288ff6",
+      "size": 303808,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/5e19daeb9229af8bfe5f893c390131e01c288ff6"
+    },
+    {
+      "path": "describe_model.m",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4415ce129465e10d53e566f744613f8a782483b0",
+      "size": 451,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/4415ce129465e10d53e566f744613f8a782483b0"
+    },
+    {
+      "path": "identify_and_control_model.m",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "031630b9d4ca42fb2bf449b06ecbc0a5a1b65160",
+      "size": 9429,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/031630b9d4ca42fb2bf449b06ecbc0a5a1b65160"
+    },
+    {
+      "path": "images for GitHub",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "850a51c7e221b5d12365fd6371189c813000f75c",
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/trees/850a51c7e221b5d12365fd6371189c813000f75c"
+    },
+    {
+      "path": "images for GitHub/assembly from front isometry.JPG",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7d6ee8f385f6ffaec5665eae931f37e639dd71f4",
+      "size": 158542,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/7d6ee8f385f6ffaec5665eae931f37e639dd71f4"
+    },
+    {
+      "path": "images for GitHub/friction identification - motor rotation speed.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4e62e1bd8383b559857794c6e0dce79d8bbaf76e",
+      "size": 58613,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/4e62e1bd8383b559857794c6e0dce79d8bbaf76e"
+    },
+    {
+      "path": "images for GitHub/friction identification - real voltage.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "921c96e96cc190b7e3d232378313d156a7db1fcc",
+      "size": 53401,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/921c96e96cc190b7e3d232378313d156a7db1fcc"
+    },
+    {
+      "path": "images for GitHub/motor identification - motor rotation speed.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0c14c1501c0cc5ffebe7a3d92d66c6cb2ed0ab59",
+      "size": 84331,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/0c14c1501c0cc5ffebe7a3d92d66c6cb2ed0ab59"
+    },
+    {
+      "path": "images for GitHub/real assembly.JPG",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "645c30a10984233f8cce05492e5cc151991ca809",
+      "size": 1242119,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/645c30a10984233f8cce05492e5cc151991ca809"
+    },
+    {
+      "path": "images for GitHub/state space Kalman control - ball position.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "53c9fe4fd9bb6cb9773fb5a8ed6a552d8b642887",
+      "size": 94790,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/53c9fe4fd9bb6cb9773fb5a8ed6a552d8b642887"
+    },
+    {
+      "path": "images for GitHub/state space Kalman control - modeled voltage.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ae3a12600159c59ac57db94d1d9069a488c975e7",
+      "size": 89191,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/ae3a12600159c59ac57db94d1d9069a488c975e7"
+    },
+    {
+      "path": "images for GitHub/state space tracking control - ball position.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ecace3c91b55b57247b8c034a3299a36278b00d1",
+      "size": 97904,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/ecace3c91b55b57247b8c034a3299a36278b00d1"
+    },
+    {
+      "path": "images for GitHub/state space tracking control - modeled voltage.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ca39bbf772bf9a19cd3b955a33e45f00fa48bf1a",
+      "size": 88350,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/ca39bbf772bf9a19cd3b955a33e45f00fa48bf1a"
+    },
+    {
+      "path": "images for GitHub/system model.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a866df3050b6e94fcc4d8812163e62dee4f3c434",
+      "size": 40827,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/a866df3050b6e94fcc4d8812163e62dee4f3c434"
+    },
+    {
+      "path": "optimize_model.m",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "81f5c9f04a41af498c04f99a2a21bb8a6df54d4d",
+      "size": 796,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/81f5c9f04a41af498c04f99a2a21bb8a6df54d4d"
+    },
+    {
+      "path": "plot_record_data.m",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6b47f11ad52be286368ebb17aa53b4148d47e482",
+      "size": 6022,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/6b47f11ad52be286368ebb17aa53b4148d47e482"
+    },
+    {
+      "path": "records general",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "0899f80f6ee524674ed3ee74c95d0f8b696f7a19",
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/trees/0899f80f6ee524674ed3ee74c95d0f8b696f7a19"
+    },
+    {
+      "path": "records general/cascade control with 12 ms sampling.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2d21acc923406c002aeca7425d9c76c08d2889dc",
+      "size": 47394,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/2d21acc923406c002aeca7425d9c76c08d2889dc"
+    },
+    {
+      "path": "records general/cascade control with gain of -4 for outer PD.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ee9b78619350d013bb6ba2d36cf3297f82f885a7",
+      "size": 13862,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/ee9b78619350d013bb6ba2d36cf3297f82f885a7"
+    },
+    {
+      "path": "records general/cascade control with gain of 230 for inner PD.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "79e6ae3b22db34cd7bce9cc67dd272d57672b300",
+      "size": 14311,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/79e6ae3b22db34cd7bce9cc67dd272d57672b300"
+    },
+    {
+      "path": "records general/friction identification with 12 ms sampling.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "74594ac0c1782fdad1e598d95ad02689023841f0",
+      "size": 43066,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/74594ac0c1782fdad1e598d95ad02689023841f0"
+    },
+    {
+      "path": "records general/model identification with 5.7 ms sampling.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "226942c1971d9748aa300a76adf49eb08f3f4e44",
+      "size": 14691,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/226942c1971d9748aa300a76adf49eb08f3f4e44"
+    },
+    {
+      "path": "records general/state space and Kalman with 12 ms sampling.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a4be5f9264c9bd3a5bfe7a9f2190b601f02eb671",
+      "size": 35433,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/a4be5f9264c9bd3a5bfe7a9f2190b601f02eb671"
+    },
+    {
+      "path": "records general/state space and filtering with 12 ms sampling.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a8869bb70de1c9a42fbd21d36012f7f32bd232a9",
+      "size": 54130,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/a8869bb70de1c9a42fbd21d36012f7f32bd232a9"
+    },
+    {
+      "path": "records general/state space and tracking with 12 ms sampling.txt",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b613715ae2b0261c5cdf9e2cc8977fef9823d38f",
+      "size": 36456,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/b613715ae2b0261c5cdf9e2cc8977fef9823d38f"
+    },
+    {
+      "path": "system_control",
+      "mode": "040000",
+      "type": "tree",
+      "sha": "b8d0076ee92cc22c1faf0c945a561caa6924452f",
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/trees/b8d0076ee92cc22c1faf0c945a561caa6924452f"
+    },
+    {
+      "path": "system_control/system_control.ino",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9ef8677eba0ec1011ec21e56412ca701ece66b5b",
+      "size": 19746,
+      "url": "https://api.github.com/repos/Doc1996/ball-and-beam-system/git/blobs/9ef8677eba0ec1011ec21e56412ca701ece66b5b"
+    }
+  ],
+  "truncated": false
+}

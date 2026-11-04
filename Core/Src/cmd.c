@@ -68,9 +68,8 @@ static void Cmd_ParseLine(const char *line) {
 		Tof_ResetStats();
 		break;
 	case 'C':
-		/* 当前点归为编码器零点并落盘；Flash 擦写停顿 20~40ms，
-		 * 须在摆杆静止时下发（主循环上下文，安全） */
-		(void)Encoder_ZeroAbsAndSave();
+		/* 当前点归为编码器零点（断电后不保持） */
+		Encoder_Zero();
 		break;
 	case 'F':
 		/* 开环频率覆盖：F60/F-60 直驱电机钉方向链（enc 应减/增），
@@ -86,7 +85,14 @@ void Cmd_Poll(void) {
 	char line[UART1_LINE_MAX];
 
 	USART1_EnsureRx();
-	while (USART1_GetLine(line, (uint8_t)sizeof line)) {
+	if (uart1_last_ready) {
+		for (uint8_t i = 0; i < UART1_LINE_MAX; i++) {
+			line[i] = uart1_last_line[i];
+			if (line[i] == '\0') {
+				break;
+			}
+		}
+		uart1_last_ready = 0;
 		Cmd_ParseLine(line);
 	}
 }

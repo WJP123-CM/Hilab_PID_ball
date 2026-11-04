@@ -1,246 +1,96 @@
 /**
  ******************************************************************************
  * @file    encoder.c
- * @brief   编码器计数、绝对位置、Z 校准与掉电保存实现（详见 encoder.h）
+ * @brief   编码器计数：16 位 CNT 回绕差分 + 方向修正 + 32 位累计
+ *
+ *          硬件：TIM3 编码器接口 PA6/PA7（CubeMX TI12 四倍频，已配）。
+ *          去掉了 Z 相捕获和 Flash 掉电保存（行程不跨 Z、断电机构会动）。
+ *
+ *          采样时机：只在 TIM1 的 20ms 节拍里调 Encoder_Tick() 一次，
+ *          窗口严格固定；Encoder_Read/GetDelta 张为纯读取，
+ *          不改变 s_enc_last。这样主循环阻塞（OLED/I2C）或其它模块
+ *          读计数都不会把差分窗口截断，速度反馈不会莫名跳变。
  ******************************************************************************
  */
 #include "encoder.h"
+#include "main.h"   /* CMSIS 临界区原语 */
+#include "tim.h"    /* htim3 */
 
-#include "main.h"					/* HAL 类型、CMSIS 临界区原语 */
-#include "stm32f1xx_hal_flash_ex.h" /* Flash 页擦除（掉电位置保存） */
-#include "tim.h"					/* htim3（编码器 + Z 捕获） */
-
-/* ---- 编码器累计位置状态（TIM3 CNT 为 16 位，回绕由 Encoder_Read 差分累计） ---- */
-static int32_t s_enc_total = 0;	  /* 32 位相对累计计数（Encoder_Zero 清零） */
-static uint16_t s_enc_last = 0u;  /* 上一次读取的 CNT 原始值 */
-static int32_t s_enc_abs = 0;	  /* 绝对累计计数（不随 Zero 清零，上电由 Flash 恢复） */
-static volatile uint32_t s_z_cnt = 0u;	  /* Z 相脉冲总数（诊断） */
-static volatile bool s_z_pending = false; /* 有未处理的 Z 事件 */
-static volatile bool s_store_dirty = true; /* 需要落盘（上电未确认前为脏） */
+static int32_t  s_enc_total  = 0; /* 32 位累计计数（Encoder_Zero 清零） */
+static uint16_t s_enc_last   = 0u; /* 上一次采样的 CNT 原始值 */
+static int16_t  s_enc_last_d = 0; /* 最近一个 20ms 窗口的增量（原始，供累计） */
+static int16_t  s_win[4]	 = {0, 0, 0, 0}; /* 最近 4 个窗口增量，速度平滑用 */
+static uint8_t  s_win_idx	 = 0u;
 
 /**
- * @brief 启动 TIM3 编码器接口与 Z 相捕获，并以当前 CNT 为相对零点
- * @note  初始化阶段调用一次；外设启动失败进 Error_Handler；
- *        绝对位置由上电 Encoder_StoreRestore 另行恢复
+ * @brief 启动 TIM3 编码器接口，以当前 CNT 为累计零点
+ * @note  初始化阶段调用一次；不使能电机、不输出脉冲
  */
 void Encoder_Init(void) {
-	/* 编码器接口启动（TIM3 CH1/CH2 = PA6/PA7，CubeMX 已配 TI12 四倍频 +
-	 * 输入滤波 15）；随后以当前 CNT 为累计零点 */
 	if (HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL) != HAL_OK) {
 		Error_Handler();
 	}
-	/* Z 相（TIM3_CH3 = PB0）输入捕获中断：每圈一个脉冲，ISR 只登记事件 */
-	if (HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_3) != HAL_OK) {
-		Error_Handler();
+	s_enc_last   = (uint16_t) __HAL_TIM_GET_COUNTER(&htim3);
+	s_enc_total  = 0;
+	s_enc_last_d = 0;
+	for (uint8_t i = 0u; i < 4u; i++) {
+		s_win[i] = 0;
 	}
-	s_enc_last	= (uint16_t) __HAL_TIM_GET_COUNTER(&htim3);
-	s_enc_total = 0;
-	s_enc_abs	= 0; /* 真实值由上电 Encoder_StoreRestore 恢复 */
+	s_win_idx = 0u;
 }
 
 /**
- * @brief 以当前 CNT 为相对零点（清 s_enc_total）
- * @note  模式切换时调用；不影响绝对计数 s_enc_abs（掉电保存仍有效）
+ * @brief 相对计数清零：当前时刻为新的 0 点
  */
 void Encoder_Zero(void) {
-	s_enc_total = 0;
-	s_enc_last	= (uint16_t) __HAL_TIM_GET_COUNTER(&htim3);
+	uint32_t pm = __get_PRIMASK();
+
+	__disable_irq(); /* 与 ISR 中的 Encoder_Tick 互斥 */
+	s_enc_total  = 0;
+	s_enc_last   = (uint16_t) __HAL_TIM_GET_COUNTER(&htim3);
+	s_enc_last_d = 0;
+	for (uint8_t i = 0u; i < 4u; i++) {
+		s_win[i] = 0;
+	}
+	s_win_idx = 0u;
+	__set_PRIMASK(pm);
 }
 
 /**
- * @brief 读编码器相对累计计数（int16 差分处理 16 位回绕 + 方向修正）
- * @retval 32 位相对累计计数（Encoder_Zero 后从 0 起算）
- * @note  含 PRIMASK 临界区（仅几条指令），50Hz ISR 与 5Hz 主循环均可调用；
- *        安全条件：两次调用间隔内计数变化 < 32768（20ms @ 本机转速恒满足）
+ * @brief 20ms 节拍采样：读 CNT、算差分、累加
+ * @note  仅在 TIM1 1ms 中断的 inner_tick 分支调用（50Hz），窗口严格固定；
+ *        TIM3 编码器接口无中断，s_enc_last 只有此处与 Encoder_Zero 会写
+ */
+void Encoder_Tick(void) {
+	uint16_t now = (uint16_t) __HAL_TIM_GET_COUNTER(&htim3);
+	int16_t	 d	 = (int16_t) (now - s_enc_last);
+
+	d = (int16_t) (ENC_DIR_SIGN * d); /* A/B 相接反 → 方向修正 */
+	s_enc_last	 = now;
+	s_enc_last_d = d;
+	s_enc_total += d;
+	/* 4 点滑动平均：低速时编码器边沿抖动会让单窗增量在 0/±几 之间跳，
+	 * 直接喂 PID 会让输出跟着噪声横跳；累计值仍用原始 d 保证位置准确 */
+	s_win[s_win_idx] = d;
+	s_win_idx		 = (uint8_t) ((s_win_idx + 1u) & 3u);
+}
+
+/**
+ * @brief 读编码器相对累计计数
+ * @retval 32 位累计计数（Encoder_Zero 后从 0 起算）
+ * @note  纯读取，不采样，不会打乱速度差分窗口
  */
 int32_t Encoder_Read(void) {
-	uint16_t now;
-	int16_t	 d;
-	uint32_t pm;
-
-	/* 临界区：本函数既被 50Hz TIM1 ISR 调用（模式1/2），也被 5Hz 主循环
-	 * Enc_Service 调用（模式0）。若主循环在执行中途被 ISR 抢占，两次调用会
-	 * 出现差分重算，累计值被多计。临界区仅几条指令 */
-	pm = __get_PRIMASK();
-	__disable_irq();
-	/* int16_t 差分天然处理 16 位回绕（正反向越界均正确）；
-	 * 安全条件：两次调用间隔内计数变化 < 32768。50Hz 调用下对应转速上限
-	 * ≈24600rpm，远超本电机工况，恒安全 */
-	now			= (uint16_t) __HAL_TIM_GET_COUNTER(&htim3);
-	d			= (int16_t) (now - s_enc_last);
-	/* 统一方向：ENC_DIR_SIGN 修正 A/B 相接反，使计数增量与 freq 同向
-	 * （否则内环成正反馈、软限幅判断方向也反） */
-	d			= (int16_t) (ENC_DIR_SIGN * d);
-	s_enc_total += d; /* 累计相对位置 */
-	s_enc_abs   += d;
-	s_enc_last	= now;
-	__set_PRIMASK(pm);
-
-	if (d != 0) {
-		s_store_dirty = true; /* 位置变化，待主循环落盘 */
-	}
 	return s_enc_total;
 }
 
-/* ==================== 绝对位置 / Z 相 / 掉电保存 ======================== */
-
-/* Flash 数据页布局（12 字节，WORD 编程） */
-typedef struct {
-	uint32_t magic;
-	uint32_t enc_abs;
-	uint32_t sum;
-} EncStore_t;
-
 /**
- * @brief 计算保存数据校验和（magic 与计数异或）
- * @param v 待校验的绝对位置
- * @retval ENC_STORE_MAGIC ^ v
- * @note  用于识别全 0xFF 未写入页与写入损坏
+ * @brief 读编码器速度：最近 4 个 20ms 窗口增量的滑动平均
+ * @retval float  counts / 20ms（已含方向修正，分辨率 0.25）
+ * @note  纯读取，不采样；窗口由 Encoder_Tick 在 ISR 中固定为 20ms。
+ *        返回 4 点均值而非单窗原始值：低速时单窗只有 0/±1，噪声会让
+ *        PID 输出横跳；均值把抖动平掉，代价是约 40ms 相位滞后
  */
-static uint32_t enc_store_sum(uint32_t v) {
-	return ENC_STORE_MAGIC ^ v;
-}
-
-/**
- * @brief 读绝对累计计数（不随 Encoder_Zero 清零）
- * @retval 32 位绝对计数（上电由 Encoder_StoreRestore 恢复）
- * @note  软限幅与掉电保存使用；32 位对齐变量，无临界区
- */
-int32_t Encoder_ReadAbs(void) {
-	return s_enc_abs;
-}
-
-/**
- * @brief 读 Z 相脉冲累计数
- * @retval 自复位以来的 Z 事件总数（诊断/OLED 显示）
- * @note  volatile 32 位读，与 ISR 并发写也原子
- */
-uint32_t Encoder_GetZCount(void) {
-	return s_z_cnt;
-}
-
-/**
- * @brief Z 相捕获事件登记（ISR 内只置标志与计数）
- * @note  仅 TIM3 捕获 ISR 调用；对齐与落盘由 5Hz Encoder_ProcessZ 处理
- */
-void Encoder_ZIndexEvent(void) {
-	s_z_cnt++;
-	s_z_pending	  = true;
-	s_store_dirty = true;
-}
-
-/**
- * @brief 若有待处理 Z 事件，把绝对计数对齐到最近整圈
- * @retval true = 本次处理了事件；false = 无待处理事件
- * @note  5Hz 主循环调用；整圈长度为 ENC_CPR，余数过半圈才进位
- */
-bool Encoder_ProcessZ(void) {
-	int32_t q;
-	int32_t r;
-
-	if (!s_z_pending) {
-		return false;
-	}
-	s_z_pending = false;
-
-	/* Z 为整圈零点：对齐到最近整圈（C 除法向零截断，余数过半圈才进位） */
-	q = s_enc_abs / (int32_t) ENC_CPR;
-	r = s_enc_abs % (int32_t) ENC_CPR;
-	if (r > (int32_t) ENC_CPR / 2) {
-		q++;
-	} else if (r < -((int32_t) ENC_CPR / 2)) {
-		q--;
-	}
-	s_enc_abs = q * (int32_t) ENC_CPR;
-	return true;
-}
-
-/**
- * @brief 标记绝对位置待落盘
- * @note  停机/模式切换时调用；实际写入由 Encoder_StoreSave 在静止时执行
- */
-void Encoder_StoreMarkDirty(void) {
-	s_store_dirty = true;
-}
-
-/**
- * @brief 查询是否有待落盘数据
- * @retval true = 有脏数据待写；false = 已保存或无需保存
- */
-bool Encoder_StorePending(void) {
-	return s_store_dirty;
-}
-
-/**
- * @brief 上电从 Flash 恢复绝对位置
- * @retval true = magic 与校验和正确并已恢复；false = 未写过/已擦除/校验失败（保持 0）
- * @note  初始化阶段调用一次；成功同时清除脏标志
- */
-bool Encoder_StoreRestore(void) {
-	const EncStore_t *d = (const EncStore_t *) ENC_STORE_ADDR;
-
-	if ((d->magic != ENC_STORE_MAGIC) || (d->sum != enc_store_sum(d->enc_abs))) {
-		return false; /* 未写过/被擦除（全 0xFF）或校验失败 */
-	}
-	s_enc_abs	  = (int32_t) d->enc_abs;
-	s_store_dirty = false;
-	return true;
-}
-
-/**
- * @brief 擦除 Flash 数据页并写入当前绝对位置
- * @retval true = 擦除与全部字编程成功；false = 失败（不再重试）
- * @note  CPU 从 Flash 取指停顿 20~40ms，只在模式 0 且摆杆静止时由 5Hz 服务调用；
- *        失败也不重试，避免主循环被反复擦写阻塞
- */
-bool Encoder_StoreSave(void) {
-	EncStore_t			  d;
-	FLASH_EraseInitTypeDef ei = {0};
-	uint32_t			  page_err = 0u;
-	const uint32_t		 *p;
-	uint32_t			  addr;
-	uint8_t				  i;
-	HAL_StatusTypeDef	  ok;
-
-	d.magic	  = ENC_STORE_MAGIC;
-	d.enc_abs = (uint32_t) s_enc_abs;
-	d.sum	  = enc_store_sum(d.enc_abs);
-
-	HAL_FLASH_Unlock();
-	__HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_PGERR | FLASH_FLAG_WRPERR);
-	ei.TypeErase   = FLASH_TYPEERASE_PAGES;
-	ei.PageAddress = ENC_STORE_ADDR;
-	ei.NbPages	   = 1u;
-	ok			   = HAL_FLASHEx_Erase(&ei, &page_err);
-	if (ok == HAL_OK) {
-		/* 目标地址必须是 Flash（ENC_STORE_ADDR），源数据在栈上；
-		 * 早期版本把栈地址当编程地址传入，导致擦除后写入静默丢失 */
-		p	 = (const uint32_t *) &d;
-		for (i = 0u; i < (sizeof(EncStore_t) / 4u); i++) {
-			addr = ENC_STORE_ADDR + (4u * i);
-			ok	 = HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, addr, p[i]);
-			if (ok != HAL_OK) {
-				break;
-			}
-		}
-	}
-	HAL_FLASH_Lock();
-	s_store_dirty = false; /* 失败不重试：避免主循环被反复擦写阻塞 */
-	return ok == HAL_OK;
-}
-
-/**
- * @brief 以当前点为编码器零点：相对与绝对计数同时清零，并立即写入 Flash
- * @retval true = Flash 写入成功；false = 擦写失败（RAM 零点仍生效）
- * @note  主循环调用（串口 C 命令）；Flash 擦写停顿 20~40ms，须在摆杆静止时执行
- */
-bool Encoder_ZeroAbsAndSave(void) {
-	uint32_t pm = __get_PRIMASK();
-	__disable_irq();
-	s_enc_total = 0;
-	s_enc_abs	= 0;
-	s_enc_last	= (uint16_t) __HAL_TIM_GET_COUNTER(&htim3);
-	__set_PRIMASK(pm);
-	s_store_dirty = true;
-	return Encoder_StoreSave();
+float Encoder_GetDelta(void) {
+	return (float) (s_win[0] + s_win[1] + s_win[2] + s_win[3]) / 4.0f;
 }

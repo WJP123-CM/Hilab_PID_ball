@@ -25,7 +25,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
-static uint8_t uart1_rx_byte;
+static uint8_t uart1_rx_byte;   /* HAL 单字节接收槽（ISR 内部用） */
 
 /**
  * @brief 启动 USART1 单字节中断接收（RX 链起点）
@@ -35,91 +35,65 @@ void USART1_StartRx(void) {
 	HAL_UART_Receive_IT(&huart1, &uart1_rx_byte, 1);
 }
 
-/* ---- RX 行组装：上位机命令行（PID 串口整定协议，解析在 main.c Cmd_ParseLine） ----
- * RX 中断逐字节接收，\r/\n 结束成行；完成行入 4 深度环形队列待主侧 10Hz 取走。
- * 噪声鲁棒：超长行截断（解析器因缺数字拒绝）；队列满时最新完成行丢弃。
- * （命令频率远低于 10Hz 轮询，正常不会发生；EMI 垃圾行被丢弃正是期望行为）。
- * 不回显：回显字符会混入 VOFA+ 数据流，破坏 FireWater 帧解析 */
-static char		   uart1_line[UART1_LINE_MAX];	/* ISR 组装区 */
-#define UART1_LINE_QDEPTH 4u /* 完成行队列深度（2 的幂，索引用掩码） */
-static char		   uart1_line_q[UART1_LINE_QDEPTH][UART1_LINE_MAX]; /* 完成行环形队列 */
-static uint8_t	   uart1_line_len	= 0;
-static volatile uint8_t uart1_q_head = 0; /* 写入位置（生产者：RX ISR） */
-static volatile uint8_t uart1_q_tail = 0; /* 取走位置（消费者：10Hz 轮询） */
-volatile uint32_t		uart1_rx_bytes	= 0; /* 诊断：RX ISR 收到的总字节数（VOFA ch6） */
+/* ---- RX 极简单缓冲方案 ----
+ * RX ISR 逐字节填入 uart1_last_line，遇 \r/\n 结束一行并置 ready=1。
+ * main 主循环看到 ready 就读、读完清 0；新行来之前覆盖旧行（最新即有效）。
+ * 队满/丢包不再考虑：主循环 20ms 一次，单缓冲区够用。
+ * 不回显：回显字符会混入 VOFA+ 数据流，破坏 FireWater 帧解析。 */
+volatile char	   uart1_last_line[UART1_LINE_MAX] = {0};
+volatile uint8_t  uart1_last_len				   = 0;
+volatile uint8_t  uart1_last_ready				   = 0;
+volatile uint32_t uart1_rx_bytes				   = 0; /* RX ISR 收到的总字节数 */
 
 /**
- * @brief RX 完成回调：逐字节组装命令行，遇 \r/\n 成行入 4 深环形队列
+ * @brief RX 完成回调：逐字节填入单缓冲，遇行尾置 ready=1
  * @param huart 触发回调的串口句柄（仅处理 USART1，其它实例立即返回）
- * @note  ISR 上下文：不可阻塞；队列满时丢弃最新完成行（命令频率远低于
- *        10Hz 轮询，正常不发生）；超长行截断，断行会被解析器拒绝；
- *        不回显，避免字符混入 VOFA FireWater 数据流
+ * @note  ISR 上下文：不可阻塞；超长行自动截断；不回显；15ms 自愈由 ErrorCallback + EnsureRx 负责
  */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 	if (huart->Instance == USART1) {
 		char c = (char) uart1_rx_byte;
 		uart1_rx_bytes++;
+
 		if (c == '\r' || c == '\n') {
-			if (uart1_line_len > 0u && uart1_line_len < UART1_LINE_MAX && (uint8_t) (uart1_q_head - uart1_q_tail) < UART1_LINE_QDEPTH) {
-				char *dst = uart1_line_q[uart1_q_head & (UART1_LINE_QDEPTH - 1u)];
-				for (uint8_t i = 0; i < uart1_line_len; i++) {
-					dst[i] = uart1_line[i];
-				}
-				dst[uart1_line_len] = '\0';
-				uart1_q_head++;
-				/* 行入队完成 */
+			if (uart1_last_len == 0u) {
+				(void) 0; /* \r\n 双序列：\r 已处理完一行，\n 跳过避免覆盖 */
+			} else {
+				uart1_last_line[uart1_last_len] = '\0';
+				uart1_last_ready = 1u;
+				uart1_last_len   = 0u;
 			}
-			uart1_line_len = 0u;
-		} else if (uart1_line_len < UART1_LINE_MAX - 1u) {
-			uart1_line[uart1_line_len++] = c;
-		} /* 超长行：丢字符直至行结束（截断行会被解析器拒绝） */
-		/* 只重启接收，不回显 */
+		} else if (uart1_last_len < UART1_LINE_MAX - 1u) {
+			uart1_last_line[uart1_last_len++] = c;
+		} else {
+			/* 超长行截断：继续累加 len，但不写 buffer（防止溢出） */
+			uart1_last_len++;
+			if (uart1_last_len >= UART1_LINE_MAX + 8u) {
+				/* 断行丢弃：连续超长，可能收到垃圾 */
+				uart1_last_len = 0u;
+			}
+		}
 		HAL_UART_Receive_IT(&huart1, &uart1_rx_byte, 1);
 	}
 }
 
 /**
- * @brief 取走一条已完成的命令行（非阻塞）
- * @param buf 输出缓冲，容量须 ≥ UART1_LINE_MAX；maxlen 缓冲长度（字节）
- * @retval true = 取到一行（已 '\0' 结尾）；false = 当前无完成行
- * @note  仅主循环调用（单消费者），10Hz 命令轮询取行后交 Cmd_ParseLine
- */
-bool USART1_GetLine(char *buf, uint8_t maxlen) {
-	if (uart1_q_head == uart1_q_tail) {
-		return false;
-	}
-	const char *src = uart1_line_q[uart1_q_tail & (UART1_LINE_QDEPTH - 1u)];
-	for (uint8_t i = 0; i < maxlen; i++) {
-		buf[i] = src[i];
-		if (src[i] == '\0') {
-			break;
-		}
-	}
-	buf[maxlen - 1u] = '\0';
-	uart1_q_tail++;
-	return true;
-}
-
-/**
  * @brief RX 错误回调：强制解锁并重挂中断接收
  * @param huart 触发回调的串口句柄（仅处理 USART1）
- * @note  F1 HAL 错误路径进入本回调时 huart->Lock 可能仍被持有，直接重挂
+ * @note  F1 HAL 已知问题：错误路径进入本回调时 huart->Lock 可能仍被持有，直接重挂
  *        会因 HAL_BUSY 静默失败导致 RX 永久停摆，故先强制 Unlock/READY
  */
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
 	if (huart->Instance == USART1) {
-		/* F1 HAL 已知问题：错误路径调用本回调时 huart->Lock 可能仍被持有，
-		 * 直接重挂会因 HAL_BUSY 静默失败 → RX 永久停摆（实测第一条命令后
-		 * 全部丢失即此症）。此处强制解锁后重挂，恢复接收 */
-		huart->Lock = HAL_UNLOCKED;
-		huart->RxState = HAL_UART_STATE_READY;
+		huart->Lock		= HAL_UNLOCKED;
+		huart->RxState	= HAL_UART_STATE_READY;
 		HAL_UART_Receive_IT(&huart1, &uart1_rx_byte, 1);
 	}
 }
 
 /**
  * @brief RX 通道自愈检查：接收态非 BUSY_RX 时解锁并重挂接收
- * @note  10Hz 命令轮询调用；覆盖 ORE/FE/噪声触发后 HAL 未自动恢复的停摆
+ * @note  主循环可调用；覆盖 ORE/FE/噪声触发后 HAL 未自动恢复的停摆
  */
 void USART1_EnsureRx(void) {
 	if (huart1.RxState != HAL_UART_STATE_BUSY_RX) {
@@ -288,4 +262,3 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
 /* USER CODE BEGIN 1 */
 
 /* USER CODE END 1 */
-

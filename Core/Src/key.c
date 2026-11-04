@@ -78,13 +78,13 @@ void Key_Tick1ms(void) {
  * @note  仅主循环调用（单消费者）；10~20ms 轮询一次即可覆盖人手操作
  */
 KeyEvent_t Key_PollEvent(void) {
-	uint8_t tail = s_key_q_tail;
+	uint8_t tail = s_key_q_tail; // 读取队尾索引
 	uint8_t evt;
 
-	if (tail == s_key_q_head) {
+	if (tail == s_key_q_head) { // 队列为空
 		return KEY_EVT_NONE;
 	}
-	evt			 = s_key_q[tail];
+	evt			 = s_key_q[tail]; // 读取队尾事件
 	s_key_q_tail = (uint8_t) ((tail + 1u) % KEY_QUEUE_LEN);
 
 	return (KeyEvent_t) evt;

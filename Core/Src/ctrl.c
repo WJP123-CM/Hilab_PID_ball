@@ -47,13 +47,13 @@ enum {
 };
 
 /* ===================== 控制状态 ===================== */
-static PID_t          s_hold_pid;
-static PID_t          s_ball_pid;
-static volatile uint8_t  s_ctrl_mode     = 0; /* 0=释放 1=保持 2=闭环 */
-static volatile int16_t  s_ball_ofs_cnt  = 0; /* 外环输出：内环目标偏移 */
-static volatile uint8_t  s_tof_lost_n    = 0; /* ToF 连续无效帧计数 */
-static volatile uint8_t  s_key_estop     = 0; /* 急停锁存 */
-static int32_t        s_store_abs_ref   = 0; /* 掉电保存基准 */
+static PID_t			hold_pid;
+static PID_t			ball_pid;
+static volatile uint8_t ctrl_mode	  = 0; /* 0=释放 1=保持 2=闭环 */
+static volatile int16_t ball_ofs_cnt  = 0; /* 外环输出：内环目标偏移 */
+static volatile uint8_t tof_lost_n	  = 0; /* ToF 连续无效帧计数 */
+static volatile uint8_t key_estop	  = 0; /* 急停锁存 */
+static int32_t			store_abs_ref = 0; /* 掉电保存基准 */
 
 static const PIDCfg_t s_hold_cfg = {
 	.Kp = HOLD_PID_KP, .Ki = HOLD_PID_KI, .Kd = HOLD_PID_KD,
@@ -72,11 +72,11 @@ void Ctrl_Init(void) {
 	Motor_Init();
 	Encoder_Init();
 	(void)Encoder_StoreRestore();
-	PID_InitFromCfg(&s_hold_pid, &s_hold_cfg);
-	PID_InitFromCfg(&s_ball_pid, &s_ball_cfg);
-	s_ctrl_mode = 0;
-	s_ball_ofs_cnt = 0;
-	s_tof_lost_n = 0;
+	PID_InitFromCfg(&hold_pid, &s_hold_cfg);
+	PID_InitFromCfg(&ball_pid, &s_ball_cfg);
+	ctrl_mode	 = 0;
+	ball_ofs_cnt = 0;
+	tof_lost_n	 = 0;
 	Motor_SetTargetFreq(0);
 	Motor_SetEnabled(false);
 #if PLATFORM_HOLD_ON_BOOT
@@ -85,49 +85,49 @@ void Ctrl_Init(void) {
 }
 
 void Ctrl_SetMode(uint8_t mode) {
-	s_ctrl_mode = 0;
+	ctrl_mode = 0;
 	Motor_SetTargetFreq(0);
 	if (mode == 0u) {
 		Encoder_StoreMarkDirty();
 		Motor_SetEnabled(false);
 		return;
 	}
-	s_key_estop = 0;
+	ctrl_mode = mode;
+	key_estop = 0;
 	Encoder_Zero();
 	Ctrl_ResetLoops();
 #if MOTOR_CONTROL_ENABLE
 	Motor_SetEnabled(true);
 #endif
-	s_ctrl_mode = mode;
 }
 
 void Ctrl_OuterTick(void) {
-	if (s_ctrl_mode != 2u) return;
+	if (ctrl_mode != 2u) return;
 	if (g_tof.range_status != 0) {
-		if (s_tof_lost_n < 255u) s_tof_lost_n++;
-		if (s_tof_lost_n >= BALL_LOSS_MAX_FRAMES) {
-			PID_Reset(&s_ball_pid);
-			s_ball_ofs_cnt = 0;
+		if (tof_lost_n < 255u) tof_lost_n++;
+		if (tof_lost_n >= BALL_LOSS_MAX_FRAMES) {
+			PID_Reset(&ball_pid);
+			ball_ofs_cnt = 0;
 		}
 		return;
 	}
-	s_tof_lost_n = 0;
-	s_ball_pid.Target = 0.0f;
-	s_ball_pid.Actual = (float)g_tof.pos_cm_x10;
-	PID_Update(&s_ball_pid);
-	s_ball_ofs_cnt = (int16_t)(BALL_PID_SIGN * s_ball_pid.Out);
+	tof_lost_n		= 0;
+	ball_pid.Target = 0.0f;
+	ball_pid.Actual = (float) g_tof.pos_cm_x10;
+	PID_Update(&ball_pid);
+	ball_ofs_cnt = (int16_t) (BALL_PID_SIGN * ball_pid.Out);
 }
 
 void Ctrl_InnerTick(void) {
 	int32_t fb;
 	float target, f_out;
-	if (s_ctrl_mode == 0u) return;
-	target = (s_ctrl_mode == 2u) ? (float)s_ball_ofs_cnt : 0.0f;
+	if (ctrl_mode == 0u) return;
+	target			= (ctrl_mode == 2u) ? (float) ball_ofs_cnt : 0.0f;
 	fb = Encoder_Read();
-	s_hold_pid.Target = target;
-	s_hold_pid.Actual = (float)fb;
-	PID_Update(&s_hold_pid);
-	f_out = HOLD_PID_SIGN * s_hold_pid.Out;
+	hold_pid.Target = target;
+	hold_pid.Actual = (float) fb;
+	PID_Update(&hold_pid);
+	f_out = HOLD_PID_SIGN * hold_pid.Out;
 #if MOTOR_CONTROL_ENABLE
 	Motor_SetTargetFreq((int32_t)f_out);
 #else
@@ -139,13 +139,13 @@ void Ctrl_EncService(void) {
 	int32_t abs;
 	(void)Encoder_Read();
 	(void)Encoder_ProcessZ();
-	if (s_ctrl_mode != 0u) {
-		s_store_abs_ref = Encoder_ReadAbs();
+	if (ctrl_mode != 0u) {
+		store_abs_ref = Encoder_ReadAbs();
 		return;
 	}
 	abs = Encoder_ReadAbs();
-	if (abs != s_store_abs_ref) {
-		s_store_abs_ref = abs;
+	if (abs != store_abs_ref) {
+		store_abs_ref = abs;
 		return;
 	}
 	if (Encoder_StorePending()) {
@@ -163,34 +163,39 @@ void Ctrl_SendTelemetry(void) {
 }
 
 void Ctrl_PollKeyEvents(void) {
-	KeyEvent_t ke;
-	while ((ke = Key_PollEvent()) != KEY_EVT_NONE) {
-		if (ke == KEY_EVT_PRESS) {
-			if (s_key_estop == 0u) {
-				s_key_estop = 1u;
-				Ctrl_SetMode(0);
-			} else {
-				s_key_estop = 0u;
+	static uint8_t key_prev = 0;
+	uint8_t		   key_now	= 0;
+
+	if ((key_now != 0u) && (key_prev == 0u)) { /* 上升沿 = 本次按下 */
+		if (key_estop == 0u) {
+			key_estop = 1u;
+			Ctrl_SetMode(0);
+		} else {
+			key_estop = 0u;
 #if MOTOR_CONTROL_ENABLE
-				Motor_SetEnabled(true);
+			Motor_SetEnabled(true);
 #endif
-			}
 		}
 	}
+	key_prev = key_now;
 }
 
 void Ctrl_ResetLoops(void) {
-	PID_Reset(&s_hold_pid);
-	PID_Reset(&s_ball_pid);
-	s_ball_ofs_cnt = 0;
-	s_tof_lost_n = 0;
+	PID_Reset(&hold_pid);
+	PID_Reset(&ball_pid);
+	ball_ofs_cnt = 0;
+	tof_lost_n	 = 0;
 }
 
 /* ===================== 状态查询 ===================== */
-uint8_t Ctrl_GetMode(void)   { return s_ctrl_mode; }
-uint8_t Ctrl_IsEstop(void)   { return s_key_estop; }
+uint8_t Ctrl_GetMode(void) {
+	return ctrl_mode;
+}
+uint8_t Ctrl_IsEstop(void) {
+	return key_estop;
+}
 
 /* ===================== 供 cmd.c 在线整定 ===================== */
 void Ctrl_SetBallGain(PIDGain_t gain, float value) {
-	PID_SetOneGain(&s_ball_pid, gain, value);
+	PID_SetOneGain(&ball_pid, gain, value);
 }

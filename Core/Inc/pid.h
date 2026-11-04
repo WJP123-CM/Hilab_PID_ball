@@ -48,6 +48,17 @@ typedef struct {
 
 	/* ---- 扩展：积分限幅抗饱和（>0 启用，0 = 不限幅） ---- */
 	float i_limit;
+
+	/* ---- 扩展：误差死区（>0 启用，0 = 关闭） ----
+	 * |Target - Actual| < deadzone 时保持上一拍 Out，不积分也不重算，
+	 * 用于抑制目标附近的小幅抖动；单位与 Target/Actual 一致 */
+	float deadzone;
+
+	/* ---- 扩展：制动包络（brake_gain > 0 启用，0 = 关闭） ----
+	 * Out 权限随剩余误差 √(2·K·|e|) 动态收缩；仅误差减小时生效；绝对上限复用 OutMax。brake_min 为包络下限（防止完全卡死，>0 启用） */
+
+	float brake_gain;
+	float brake_min;
 } PID_t;
 
 /**

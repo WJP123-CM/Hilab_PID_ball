@@ -21,7 +21,7 @@ extern "C" {
 
 /* ---- 调度周期（与 TIM1 1ms 基础节拍配合的软件分频） ---- */
 #define CTRL_PERIOD_MS  20u  /* 平台保持控制：50Hz */
-#define MEAS_PERIOD_MS  50u  /* ToF 测距/滤波/外环/VOFA：20Hz */
+#define Out_PERIOD_MS	20u	 /* ToF 测距/滤波/外环/VOFA：20Hz */
 #define CMD_PERIOD_MS   100u /* 串口命令解析：10Hz */
 #define OLED_PERIOD_MS  200u /* OLED 刷新：5Hz */
 

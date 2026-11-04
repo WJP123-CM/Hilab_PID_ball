@@ -46,14 +46,20 @@ void USART1_StartRx(void);
 /* printf/puts/putchar 已通过 _write/fputc 重定向到 USART1（见 usart.c） */
 void VOFA_SendFrame(const int32_t *data, uint8_t ch_num);
 
-/* RX 行协议参数：命令行最大长度（含 NUL），取行缓冲须不小于该值 */
+/* RX 单缓冲参数：行最大长度（含 NUL），外部读 uart1_last_line 时需注意 */
 #define UART1_LINE_MAX 32u
-/* 取走一条已完成的命令行（以 \r/\n 结尾的行）到 buf；无完成行返回 false。
- * 供 main.c 10Hz 命令轮询调用（Cmd_Poll） */
-bool USART1_GetLine(char *buf, uint8_t maxlen);
-/* RX 停摆自愈：接收态异常时解锁并重挂中断接收（10Hz 轮询调用） */
+/* RX 停摆自愈：接收态异常时解锁并重挂中断接收 */
 void USART1_EnsureRx(void);
-/* 诊断：RX ISR 累计收到的字节数（中断并发读，原子 32 位） */
+
+/* ---- RX 外部可见接口（极简单缓冲） ----
+ * uart1_last_line : 最近一次收到的完整行（以 '\0' 结尾）
+ * uart1_last_len  : 该行实际长度（不含 '\0'）
+ * uart1_last_ready: ISR 写完置 1；主循环读完置 0 即可
+ * uart1_rx_bytes  : RX ISR 累计收到的总字节数（诊断用）
+ * 多帧间只保留最新一行，主循环 20ms 一次完全够用 */
+extern volatile char	 uart1_last_line[UART1_LINE_MAX];
+extern volatile uint8_t  uart1_last_len;
+extern volatile uint8_t  uart1_last_ready;
 extern volatile uint32_t uart1_rx_bytes;
 /* USER CODE END Prototypes */
 
