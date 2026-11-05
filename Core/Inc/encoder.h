@@ -41,24 +41,32 @@ void Encoder_Init(void);
 void Encoder_Zero(void);
 
 /**
- * @brief 20ms 节拍采样：读 CNT、算差分、累加
- * @note  只在 TIM1 的 inner_tick 分支调用（严格 20ms），保证差分窗口固定；
- *        主循环读接口不打乱窗口，速度反馈不会跳动
+ * @brief 编码器观测快照（本模块唯一数据出口，只读）
+ *        写只发生在 encoder.c 的 Encoder_Tick / Encoder_Init / Encoder_Zero；
+ *        控制层直接读字段，不再为每个量提供 getter。
+ */
+typedef struct {
+	int32_t total; /* 累计计数（相对零点），角度环的反馈量 */
+	int32_t delta; /* 最近一次采样的增量（已含方向修正） */
+} EncoderState_t;
+
+extern EncoderState_t g_enc;
+
+/**
+ * @brief 采样一次：读 CNT、算差分、累加、更新快照
+ * @note  仿照 Tof_Tick：主循环每调一次就采一次，不做时间门控。
  */
 void Encoder_Tick(void);
 
 /**
- * @brief 读编码器相对累计计数（int16 差分处理 16 位回绕 + 方向修正）
+ * @brief 读编码器相对累计计数（兼容接口，等价于 g_enc.total）
  * @retval 32 位累计计数（Encoder_Zero 后从 0 起算）
- * @note  纯读取，不采样；可在主循环/OLED 随意调用
  */
 int32_t Encoder_Read(void);
 
 /**
- * @brief 读编码器速度：最近 4 个 20ms 窗口增量的滑动平均
- * @retval float  counts / 20ms（已含方向修正，分辨率 0.25）
- * @note  纯读取，不采样；换算：vel_counts_per_s = 返回值 × 50。
- *        4 点均值用于抑制低速时编码器边沿抖动，带来约 40ms 相位滞后
+ * @brief 读最近窗口增量（兼容接口，等价于 g_enc.delta）
+ * @retval float 本窗口计数增量（已含方向修正）
  */
 float Encoder_GetDelta(void);
 

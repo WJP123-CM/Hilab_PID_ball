@@ -61,7 +61,7 @@ static void Cmd_ParseLine(const char *line) {
 	case 'P':
 	case 'I':
 	case 'D':
-		/* PID 增益命令已禁用（ctrl.c 移除），保留命令解析兼容性 */
+		/* PID 增益命令暂不支持，保留命令解析兼容性 */
 		break;
 	case 'R':
 		TofFilter_Reset(&g_tof_filter);

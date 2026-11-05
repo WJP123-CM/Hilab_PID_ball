@@ -18,7 +18,7 @@
                 "-here",
                 "-ucrt64",
                 "-c",
-                "cmake --preset Release"
+                "cmake --preset Debug"
             ],
             "presentation": {
                 "reveal": "never",
@@ -39,7 +39,7 @@
                 "-here",
                 "-ucrt64",
                 "-c",
-                "cmake --build build/Release"
+                "cmake --build build/Debug"
             ],
             "presentation": {
                 "reveal": "never",
