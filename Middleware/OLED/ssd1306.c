@@ -22,6 +22,11 @@ void ssd1306_WriteData(uint8_t *buffer, size_t buff_size) {
 	HAL_I2C_Mem_Write(&SSD1306_I2C_PORT, SSD1306_I2C_ADDR, 0x40, 1, buffer, buff_size, 100);
 }
 
+// Send data via DMA（非阻塞，仅用于逐页回写）
+void ssd1306_WriteData_DMA(uint8_t *buffer, size_t buff_size) {
+	HAL_I2C_Mem_Write_DMA(&SSD1306_I2C_PORT, SSD1306_I2C_ADDR, 0x40, 1, buffer, (uint16_t) buff_size);
+}
+
 #elif defined(SSD1306_USE_SPI)
 
 void ssd1306_Reset(void) {
@@ -207,7 +212,7 @@ void ssd1306_UpdateRect(uint8_t x, uint8_t y, uint8_t w, uint8_t h) {
         ssd1306_WriteCommand(0xB0 + p);          // Set the current RAM page address.
         ssd1306_WriteCommand(0x00 + SSD1306_X_OFFSET_LOWER);
         ssd1306_WriteCommand(0x10 + SSD1306_X_OFFSET_UPPER);
-        ssd1306_WriteData(&SSD1306_Buffer[SSD1306_WIDTH*p], SSD1306_WIDTH);
+        ssd1306_WriteData_DMA(&SSD1306_Buffer[SSD1306_WIDTH*p], SSD1306_WIDTH);
     }
 }
 

@@ -1,7 +1,5 @@
 /* USER CODE BEGIN Header */
-/**C:/msys64/msys2_shell.cmd -defterm -no-start -use-full-path -here -ucrt64 -c "cmake --build build/Debug"
-C:/msys64/msys2_shell.cmd -defterm -no-start -use-full-path -here -ucrt64 -c "openocd -f openocd_stlink.cfg -c 'program
-build/Debug/Hilab_PID.elf verify reset exit'"
+/**
  ******************************************************************************
  * @file           : main.c
  * @brief          : Main program body
@@ -21,18 +19,20 @@ build/Debug/Hilab_PID.elf verify reset exit'"
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 
+#include "dma.h"
 #include "gpio.h"
 #include "i2c.h"
 #include "iwdg.h"
-#include "motor.h"
 #include "tim.h"
 #include "usart.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "cmd.h"	 /* 上位机行协议：A/Z/P/I/D/R */
+#include "cmd.h" /* 上位机行协议：A/Z/P/I/D/R */
+/* ctrl.c 已禁用，用户自行在 main.c 编写控制逻辑 */
 #include "encoder.h" /* 编码器计数/Z 校准/掉电保存 */
 #include "key.h"	 /* PA0 按键消抖与事件队列 */
+#include "motor.h"	 /* 电机控制（含 g_mot_en） */
 #include "oled.h"	 /* OLED 屏幕原语 */
 #include "pid.h"	 /* 位置式 PID 控制器（标准命名：Target/Actual/Out/Kp/Ki/Kd） */
 #include "tof.h"	 /* 测距 → 滤波 → 有效帧占比（含 g_tof_filter） */
@@ -41,6 +41,7 @@ build/Debug/Hilab_PID.elf verify reset exit'"
 #include <stdint.h>
 #include <stdio.h>	/* snprintf */
 #include <stdlib.h> /* strtol */
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -51,14 +52,16 @@ build/Debug/Hilab_PID.elf verify reset exit'"
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 /* 调度周期：内环=外环=20ms（50Hz，同拍） */
-#define Inner_PERIOD_MS	   20u					 /* 内环：编码器定速 PID，50Hz */
-#define Outter_PERIOD_MS   (Inner_PERIOD_MS * 5) /* 外环：位置→速度目标，100ms */
+#define Inner_PERIOD_MS		20u					  /* 内环：编码器位置 PID，50Hz */
+#define Outter_PERIOD_MS	(Inner_PERIOD_MS * 5) /* 外环：位置→内环位置目标，100ms */
 #define CMD_PERIOD_MS  100u					 /* 串口命令：10Hz（主循环执行） */
-#define OLED_PERIOD_MS 200u					 /* OLED 刷新：5Hz（主循环执行） */
+#define OLED_PERIOD_MS		200u				  /* OLED 页面内容更新：5Hz（主循环执行） */
+#define OLED_TICK_PERIOD_MS 25u					  /* OLED 逐页回写：25ms 一页，8 页整屏 200ms */
 #define VOFA_PERIOD_MS	 Inner_PERIOD_MS	   /* VOFA 20ms 1次 */
-#define ENC_TICK_PERIOD_MS 10					 /* 编码器 20ms 1次 */
-#define TOF_TICK_PERIOD_MS Inner_PERIOD_MS		 /* TOF 20ms 1次 */
-
+#define TOF_PERIOD_MS		Inner_PERIOD_MS		  /* TOF 20ms 1次 */
+#define ENCODER_PERIOD_MS	20					  /* 编码器 50ms 1次 */
+#define ENC_TICK_PERIOD_MS	20					  /* 编码器 50ms 1次 */
+#define TOF_TICK_PERIOD_MS	20					  /* TOF 20ms 1次 */
 /* 单环位置 PID：小球位置(pos_cm_x10) → 脉冲频率(Hz)，每个测距拍推进一次。
  * 方向开关（唯一）：1 = 正相关（pos>0 时 freq>0），0 = 负相关。
  * Target=0 时 Out = Kp×(0−pos)，故正相关对应 Kp 取负号。 */
@@ -85,16 +88,17 @@ static volatile uint8_t rx_valid = 0;		/* 1 = 收到新参数行，等主循环�
 
 /* ---- 调度标志（TIM1 ISR 置位，主循环消费） ---- */
 static volatile uint8_t inner_tick	= 0; /* 内环：编码器 PID + TOF 20ms */
-static volatile uint8_t outter_tick = 0; /* 外环：位置 PID → 速度目标 100ms */
+static volatile uint8_t	 outter_tick	= 0; /* 外环：位置 PID → 内环位置目标 100ms */
 static volatile uint8_t cmd_tick	= 0; /* 串口命令解析 100ms */
-static volatile uint8_t oled_tick	= 0; /* OLED 刷新 200ms */
+static volatile uint8_t	 oled_tick		= 0; /* OLED 页面内容更新 200ms */
+static volatile uint8_t	 oled_page_tick = 0; /* OLED 逐页回写 25ms */
 static volatile uint8_t vofa_tick	= 0; /* VOFA 20ms 1次 */
-static volatile uint32_t tof_tick	 = 0;
-static volatile uint32_t enc_tick	 = 0;
+static volatile uint32_t tof_tick		= 0;
+static volatile uint32_t enc_tick		= 0;
 /* 主循环心跳：1 = 最近 1s 内主循环至少跑过一圈；ISR 据此决定是否喂狗 */
 static volatile uint8_t loop_alive = 0;
 bool					runstate   = 1; /* 默认上电即运行，按键单击翻转为停止 */
-/* ---- 位置外环 PID（ToF 反馈 → 速度目标 counts/s） ---- */
+/* ---- 位置外环 PID（ToF 反馈 → 内环位置目标 counts） ---- */
 PID_t ball_pid = {
 	.Kp			= 5.0f,
 	.Ki			= 0.0f,
@@ -107,7 +111,7 @@ PID_t ball_pid = {
 	.brake_min	= 0.5f,
 	.Out		= 200.0f,
 };
-/* ---- 速度内环 PID（编码器反馈 → 步进频率 Hz） ---- */
+/* ---- 位置内环 PID（编码器反馈 → 步进频率 Hz） ---- */
 PID_t encoder_pid = {
 	.Kp		 = 11.0f,
 	.Ki		 = 0.0f,
@@ -117,13 +121,14 @@ PID_t encoder_pid = {
 	.i_limit = 10000.0f,
 	.Target	 = 0.0f,
 };
-/* 滤波器实例 g_tof_filter 定义于 tof.c，本文件通过 tof.h 访问。 */
+/* 控制状态（s_ctrl_mode/s_key_estop）与滤波器实例（g_tof_filter）已迁至
+ * ctrl.c / tof.c，本文件通过 Ctrl_GetMode()/Ctrl_IsEstop()/g_tof_filter 访问。 */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-/* 命令接口由 cmd.h 提供（非 static）。 */
+/* 控制与命令接口由 ctrl.h / cmd.h 提供（非 static）。 */
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -161,6 +166,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_I2C1_Init();
   MX_TIM2_Init();
   MX_USART1_UART_Init();
@@ -219,7 +225,9 @@ int main(void)
   Encoder_Init(); /* 启动 TIM3 编码器接口，否则 CEN 不置位、CNT 恒 0 */
 
   /* 串级双 PID 初始化：
-
+   * 外环位置（ToF pos_cm_x10）→ 内环位置目标（counts）
+   * 内环位置（编码器 counts）→ 步进频率（Hz）
+   * 方向符号由 BALL_POS_HZ_DIR 统一决定 */
 
   /* 接收上位机命令（A/Z/P/I/D/R）；VOFA 数据流仍只含数值，不混入文本 */
   USART1_StartRx();
@@ -245,16 +253,11 @@ int main(void)
   while (1) {
 	  /* USER CODE END WHILE */
 
-	  /* 串口参数接管：仅在收到新参数行时写入一次，禁止每圈无条件覆盖 */
-	  if (rx_valid) {
-		  rx_valid = 0;
-		  if (rx_cnt > 0) ball_pid.Kp = rx_val[0];
-		  if (rx_cnt > 1) ball_pid.Ki = rx_val[1];
-		  if (rx_cnt > 2) ball_pid.Kd = rx_val[2];
-		  if (rx_cnt > 3) ball_pid.brake_gain = rx_val[3];
-		  if (rx_cnt > 4) ball_pid.brake_min = rx_val[4];
-	  }
 	  /* USER CODE BEGIN 3 */
+	  if (tof_tick) {
+		  tof_tick = 0;
+		  Tof_Tick(&g_tof_filter);
+	  }
 	  {
 		  KeyEvent_t evt;
 		  while ((evt = Key_PollEvent()) != KEY_EVT_NONE) {
@@ -266,30 +269,19 @@ int main(void)
 	  /* 主循环心跳：IWDG 据此判断是否卡死，任何一步超过 ≈1s 没转圈都会触发复位 */
 	  loop_alive = 1;
 
-	  /* 外环（100ms）：位置 PID → 速度目标 */
+	  /* 外环（100ms）：位置 PID → 内环位置目标 */
 
-	  /* 编码器主循环节拍：内部按 20ms 时间门控，更新 g_enc 快照 */
-	  if (enc_tick) {
-		  enc_tick = 0;
-		  Encoder_Tick();
-	  }
-	  if (tof_tick) {
-		  tof_tick = 0;
-		  Tof_Tick(&g_tof_filter);
+	  /* 内环（20ms）：编码器位置反馈 + 位置 PID → 电机频率 */
+	  if (inner_tick) {
+		  inner_tick = 0;
 	  }
 
-	  /* 内环（20ms）：编码器速度反馈 + 速度 PID → 电机频率 */
-
-	  /* VOFA 遥测 9 通道（调试用）：
-	   * ch6=Kd×100  ch7=Error0×100  ch8=Error1×100 */
+	  /* VOFA 遥测：ch0=pos_cm_x10 / ch1=enc_target / ch2=enc_actual / ch3=pulse_freq / ch4=tof_status */
 	  if (vofa_tick) {
 		  vofa_tick		  = 0;
-		  int32_t vofa[9] = {(int32_t) encoder_pid.Target,		  (int32_t) encoder_pid.Actual,
-							 (int32_t) encoder_pid.Out,			  (int32_t) ball_pid.Target,
-							 (int32_t) ball_pid.Actual,			  (int32_t) ball_pid.Out,
-							 (int32_t) (ball_pid.Kd * 100.0f),	  (int32_t) (ball_pid.Error0 * 100.0f),
-							 (int32_t) (ball_pid.Error1 * 100.0f)};
-		  VOFA_SendFrame(vofa, 9);
+		  int32_t vofa[6] = {(int32_t) encoder_pid.Target, (int32_t) encoder_pid.Actual, (int32_t) encoder_pid.Out,
+							 (int32_t) ball_pid.Target,	   (int32_t) ball_pid.Actual,	 (int32_t) ball_pid.Out};
+		  VOFA_SendFrame(vofa, 6);
 	  }
 
 	  /* 100ms：读最新 RX 行、按逗号分隔解析整数 */
@@ -306,11 +298,11 @@ int main(void)
 				  if (*p == '\0') {
 					  break;
 				  }
-				  float v = strtof(p, &end);
+				  long v = strtol(p, &end, 10);
 				  if (end == p) {
 					  break;
 				  }
-				  rx_val[rx_cnt++] = v;
+				  rx_val[rx_cnt++] = (int32_t) v;
 				  p				   = end;
 				  if (*p == ',') {
 					  p++;
@@ -319,9 +311,6 @@ int main(void)
 				  break;
 			  }
 			  uart1_last_ready = 0;
-			  if (rx_cnt > 0) {
-				  rx_valid = 1;
-			  } /* 交给主循环写入一次 */
 		  }
 	  }
 
@@ -341,7 +330,7 @@ int main(void)
 
 			for (uint8_t i = 0; i < rx_cnt && i < RX_VAL_MAX; i++) {
 				if (i) *p++ = ',';
-				p += snprintf(p, sizeof(rx_str) - (size_t) (p - rx_str), "%d", (int) rx_val[i]);
+				p += snprintf(p, sizeof(rx_str) - (size_t) (p - rx_str), "%ld", (long) rx_val[i]);
 			}
 			*p = '\0';
 
@@ -352,7 +341,24 @@ int main(void)
 			OLED_Print(0, 24, "ENC:%6ld", (long) Encoder_Read());
 			OLED_Print(0, 32, "M:%u R:%u", (unsigned) mot_en, (unsigned) runstate);
 			OLED_Print(0, 48, "RX:%d %s", (int) rx_cnt, rx_str);
-			OLED_Flush(0, 0, OLED_WIDTH, 64);
+			/* TOFSTATE = g_tof.range_status（VL53L1X RangeStatus，见 vl53l1_def.h）：
+			 *   0  有效
+			 *   1  Sigma 超限          2  信号过弱
+			 *   3  低于最小量程        4  相位越界
+			 *   5  硬件自检失败        6  有效但未做绕回校验
+			 *   7  绕回目标失败        8  内部算法溢出
+			 *   9  串扰信号失败        10 背靠背首中断（丢弃）
+			 *   11 多脉冲合并          12 有目标但信号不足
+			 *   13 低于最小量程/ROI 裁剪
+			 *   14 距离无效（负值）
+			 *   -1 等数据就绪超时  -2 读取失败  -3 越出 [8,500]mm 量程门 */
+			OLED_Print(0, 56, "TOFSTATE:%6ld", (long) g_tof.range_status);
+	  }
+
+	  /* 25ms：逐页回写一页，8 页整屏 200ms，单次 I2C 阻塞仅为整屏的 1/8 */
+	  if (oled_page_tick) {
+		  oled_page_tick = 0;
+		  OLED_Tick();
 	  }
 
 	  /* 按键事件消费（非阻塞） */
@@ -408,28 +414,31 @@ void SystemClock_Config(void)
  */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 	static uint16_t tick_ms = 0;
-	static uint8_t	ctrl_tick = 0;
 
 	if (htim->Instance != TIM1) {
 		return;
 	}
+	/* 编码器 50ms 1次 */
+	if ((tick_ms % TOF_PERIOD_MS) == 0) {
+		HAL_IWDG_Refresh(&hiwdg);
+	}
+	if ((tick_ms % ENCODER_PERIOD_MS) == 0) {
+		Encoder_Tick();
+		HAL_IWDG_Refresh(&hiwdg);
+	}
 
 	if (++tick_ms >= 1000u) {
 		tick_ms = 0;
-		if (++ctrl_tick >= 1) {
-			ctrl_tick = 0;
-			// ball_pid.Out = -ball_pid.Out;
-		}
 	}
 	if (tick_ms % Outter_PERIOD_MS == 0) {
 		ball_pid.Target = 0.0f;
 		ball_pid.Actual = -(float) g_tof.pos_cm_x10;
 		PID_Update(&ball_pid);
-		encoder_pid.Target = ZERO_THETA + ball_pid.Out; /* counts/s，与编码器速度反馈同量纲 */
+		encoder_pid.Target = ball_pid.Out + ZERO_THETA;
 	}
 	if ((tick_ms % Inner_PERIOD_MS) == 0) {
 		inner_tick		   = 1;
-		encoder_pid.Actual = g_enc.total; /* counts/s */
+		encoder_pid.Actual = (float) g_enc.total;
 		PID_Update(&encoder_pid);
 		if (runstate) {
 			Motor_SetTargetFreq((int32_t) encoder_pid.Out);
@@ -448,6 +457,9 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 	}
 	if ((tick_ms % OLED_PERIOD_MS) == 0) {
 		oled_tick = 1;
+	}
+	if ((tick_ms % OLED_TICK_PERIOD_MS) == 0) {
+		oled_page_tick = 1;
 	}
 	if ((tick_ms % VOFA_PERIOD_MS) == 0) {
 		vofa_tick = 1;

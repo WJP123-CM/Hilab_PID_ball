@@ -75,8 +75,8 @@ void PID_Reset(PID_t *pid) {
  */
 void PID_Update(PID_t *pid) {
 	/* 0) 死区判断：误差进入 ±deadzone 时保持上一拍 Out（不重算、不积分），
-	 *    速度环靠上一拍输出维持当前转速，避免在目标附近来回抖。
-	 *    例外：Target=0（停机）必须走正常计算，否则速度衰减进死区后
+	 *    闭环靠上一拍输出维持当前状态，避免在目标附近来回抖。
+	 *    例外：Target=0（停机）必须走正常计算，否则输出停在死区里后
 	 *    会一直保持上一拍非零输出，电机停不下来 */
 	if (pid->deadzone > 0.0f && pid->Target != 0.0f) {
 		float e = pid->Target - pid->Actual;

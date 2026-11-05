@@ -26,7 +26,7 @@ extern "C" {
 /* 计数方向修正：+1 = 计数增量与 Motor_SetTargetFreq 正号同向；
  *                         -1 = 计数增量与 freq 反向（负相关）。
  * 2026-11-02 实测：Motor_Init 对齐 DIR 初态后，freq>0（DIR=高）使 TIM3_CNT
- * 递增，故取 +1，速度反馈与频率同号，速度环为负反馈。 */
+ * 递增，故取 +1，位置反馈与频率同号，位置环为负反馈。 */
 #define ENC_DIR_SIGN (+1)
 
 /**

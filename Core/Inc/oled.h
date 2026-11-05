@@ -29,18 +29,27 @@ void OLED_Init(void);
 
 /**
  * @brief  printf 风格文本打印：在 (x,y)（像素坐标）处显示一行，字符 6x8。
- * @note   只写入显存，不发 I2C；调用方随后用 OLED_Flush 回写对应区域
+ * @note   只写入显存并置脏页标记，不发 I2C；由 OLED_Tick 逐页回写
  * @param  x  列（0~127，像素）
  * @param  y  行（0~63，像素）
  * @param  fmt  printf 格式串
  */
 void OLED_Print(uint8_t x, uint8_t y, const char *fmt, ...);
 
-/** @brief 清除矩形区域（x,y 左上角，w/h 尺寸） */
+/** @brief 清除矩形区域（x,y 左上角，w/h 尺寸），同时置对应脏页 */
 void OLED_ClearArea(uint8_t x, uint8_t y, uint8_t w, uint8_t h);
 
-/** @brief 把显存中的矩形区域回写到屏幕（对应 ssd1306_UpdateRect） */
+/**
+ * @brief  立即整块回写显存区域（阻塞 I2C）。
+ * @note   仅在初始化阶段使用；日常刷新请改用 OLED_Tick
+ */
 void OLED_Flush(uint8_t x, uint8_t y, uint8_t w, uint8_t h);
+
+/**
+ * @brief  逐页刷新节拍：每次最多回写一页（128x8 像素），无脏页时直接返回。
+ * @note   由主循环按 25ms 节拍调用，整屏 8 页 200ms 刷完
+ */
+void OLED_Tick(void);
 
 #ifdef __cplusplus
 }

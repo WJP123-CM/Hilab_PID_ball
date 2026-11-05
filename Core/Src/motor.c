@@ -59,7 +59,7 @@ void Motor_Init(void) {
 	encoder_target_freq = 0;
 	/* 上电 DIR 由 gpio.c 复位为低电平（= MOTOR_DIR_CCW），last_dir_cw 必须与该
 	 * 电平一致，否则首拍 freq>0 时 cw==last_dir_cw 不写 DIR，脉冲会按反方向
-	 * 跑，速度环变成正反馈（2026-11-02 实测 Out 恒饱和、编码器越跑越远） */
+	 * 跑，位置环变成正反馈（2026-11-02 实测 Out 恒饱和、编码器越跑越远） */
 	Motor_SetDir(false);
 	last_dir_cw = false;
 	/* 上电安全态：不使能电机、不输出脉冲（PA1/PA2 已由 gpio.c 初始化为低） */
