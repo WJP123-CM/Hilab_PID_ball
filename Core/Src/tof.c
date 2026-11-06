@@ -180,6 +180,9 @@ TofState_t g_tof = {
 	.raw_mm		  = 0,
 	.filt_mm	  = 0,
 	.pos_cm_x10	  = 0,
+	.ema_mm		  = 0,
+	.kf_vel		  = 0,
+	.kf_state	  = 0,
 	.range_status = -1,
 	.valid_pct	  = 0,
 	.alpha_milli   = TOF_FILTER_ALPHA_DEFAULT_MILLI,
@@ -216,7 +219,7 @@ void Tof_Tick(TofFilter_t *f) {
 	if (rstat == 0) {
 		g_tof.raw_mm = dist_mm;
 		/* 量程门 [8, 500]mm（2026-10-31 放宽）：越界帧拒绝并上报 -3 */
-		if (!TofFilter_Update(f, dist_mm, rstat)) {
+		if (!TofFilter_Update(f, dist_mm, rstat, HAL_GetTick())) {
 			out_st = -3; /* 状态有效但原始值越界，滤波器拒绝 */
 		} else {
 			out_st			  = 0;
@@ -226,9 +229,20 @@ void Tof_Tick(TofFilter_t *f) {
 		g_tof.pos_cm_x10 = TofFilter_GetCmX10(f);
 	} else {
 		g_tof.raw_mm = 0; /* 通信失败帧不输出伪距离 */
+		/* 无效帧不推进 EMA，但仍推进 KF 预测（kf_miss 累计用于回退判据） */
+		(void) TofFilter_Update(f, 0, rstat, HAL_GetTick());
 	}
 	g_tof.range_status	 = out_st;
 	g_tof.alpha_milli	 = f->alpha_milli; /* A 命令改值后同步回显 */
+
+	/* KF 判读量（遥测/OLED 用）：每帧都写。
+	 * kf_state 位域：bit0=1 表示 bad_streak≥3（KF 与 EMA 持续背离，仅告警不切换）；
+	 *               bit1~4=bad_streak(0~15)；bit5~7=kf_miss(0~7) */
+	g_tof.ema_mm   = (int16_t) ((f->ema_milli_mm + 500) / 1000);
+	g_tof.kf_vel   = (int16_t) KF_GetVel(&f->kf);
+	g_tof.kf_state = (uint8_t) (((f->kf_bad_streak >= 3u) ? 1u : 0u) |
+								((f->kf_bad_streak > 15u ? 15u : f->kf_bad_streak) << 1) |
+								((f->kf_miss > 7u ? 7u : f->kf_miss) << 5));
 
 	/* 有效帧占比：每帧实时结算（OLED 5Hz 直接显示），计数器每 5s 清零重计 */
 	s_win_total++;

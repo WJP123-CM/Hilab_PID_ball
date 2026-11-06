@@ -53,6 +53,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # 纯算法模块（无硬件依赖，可主机侧验证）
     Core/Src/tof_filter.c # ToF 滤波（中值-5 + EMA，整数运算）
     Core/Src/pid.c        # 单环位置式 PID
+    Core/Src/kalman.c     # 卡尔曼滤波（2 维 CV 模型，浮点，不依赖 HAL/libm）
     # 应用层模块（无硬件）
     Core/Src/key.c        # PA0 按键消抖 + 0/1 状态
     Core/Src/cmd.c        # 上位机行协议：A/Z/P/I/D/R 命令解析

@@ -3,14 +3,18 @@
  * @file    kalman.c
  * @brief   基础卡尔曼滤波观测器实现（2 维恒速 CV 模型）
  *
- *          预测：x' = F x,  P' = F P F^T + Q,  F=[[1,dt],[0,1]], Q=diag(q_pos,q_vel)
+ *          预测：x' = F x,  P' = F P F^T + Q,  F=[[1,dt],[0,1]]
+ *          Q 由单参数 sig_a2 与 dt 生成（连续白噪声加速度模型）：
+ *            q00 = sig_a2·dt³/3,  q01 = q10 = sig_a2·dt²/2,  q11 = sig_a2·dt
  *          更新：标量观测 z = H x + v，按 H=[1,0]（位置）/ [0,1]（速度）分别实现
  *
  *          无外部依赖：不使用 HAL/libm（含 isfinite/sqrtf 均手写规避），
  *          可在 ISR 或主循环直接调用；20ms 周期下每拍约数十次浮点乘加。
  *
- *          2026-10-29 硬化：更新后协方差对称平均+对角非负钳位（简单形式
- *          (I-KH)P 非 Joseph）、负方差纳入发散判定、速度限幅 vel_max、
+ *          协方差只存上三角 p00/p01/p11（p10 恒等于 p01），故更新后只需
+ *          对角非负钳位，不再需要对称平均修补（2026-11-05 简化）。
+ *
+ *          数值硬化（2026-10-29）：负方差纳入发散判定、速度限幅 vel_max、
  *          新增新息门控 KF_UpdatePosGated。
  ******************************************************************************
  */
@@ -45,19 +49,24 @@ static void kf_clamp_vel(KF_t *kf) {
 }
 
 /**
- * @brief 协方差硬化：简单形式 (I-KH)P 在单精度舍入下不保证对称/非负，
- *        强制 p01/p10 对称平均、对角线钳位非负，防数值病态缓慢累积
+ * @brief 协方差钳位：非负对角 + 正定性（|p01| <= sqrt(p00*p11)）
+ *        简单形式 (I-KH)P 在单精度舍入下对角可能变负、交叉项可能越界，
+ *        对角钳零后 p01 仍是独立状态量，故需按正定性再收一次
+ *        （对称性由只存上三角天然保证）
  */
-static void kf_sanitize_cov(KF_t *kf) {
-	float ps = 0.5f * (kf->p01 + kf->p10);
+static void kf_clamp_cov(KF_t *kf) {
+	float lim2;
 
-	kf->p01 = ps;
-	kf->p10 = ps;
 	if (kf->p00 < 0.0f) {
 		kf->p00 = 0.0f;
 	}
 	if (kf->p11 < 0.0f) {
 		kf->p11 = 0.0f;
+	}
+
+	lim2 = kf->p00 * kf->p11; /* 用平方比较，避免 sqrtf */
+	if (kf->p01 * kf->p01 > lim2) {
+		kf->p01 = (lim2 > 0.0f) ? (lim2 / kf->p01) : 0.0f; /* 缩到边界内，保号 */
 	}
 }
 
@@ -66,7 +75,7 @@ static void kf_sanitize_cov(KF_t *kf) {
  * @retval 1 健康；0 触发了保护复位
  */
 static int kf_guard(KF_t *kf) {
-	if (!kf_is_finite(kf->p00) || !kf_is_finite(kf->p11) ||
+	if (!kf_is_finite(kf->p00) || !kf_is_finite(kf->p01) || !kf_is_finite(kf->p11) ||
 		kf->p00 < 0.0f || kf->p11 < 0.0f ||
 		kf->p00 > kf->max_cov || kf->p11 > kf->max_cov ||
 		!kf_is_finite(kf->pos) || !kf_is_finite(kf->vel)) {
@@ -76,7 +85,6 @@ static int kf_guard(KF_t *kf) {
 		kf->p00 = kf->max_cov;	/* 协方差置大：等价于"重新不确定"，靠后续观测重新收敛 */
 		kf->p11 = kf->max_cov;
 		kf->p01 = 0.0f;
-		kf->p10 = 0.0f;
 		kf->diverge_cnt++;
 		return 0;
 	}
@@ -86,10 +94,9 @@ static int kf_guard(KF_t *kf) {
 /* ===================== 初始化 / 配置接口 ================================== */
 
 void KF_Init(KF_t *kf, float init_pos, float init_vel, float dt,
-			 float q_pos, float q_vel, float init_cov) {
+			 float sig_a2, float init_cov) {
 	kf->dt		= (kf_is_finite(dt) && dt > 0.0f) ? dt : KF_DEFAULT_DT;
-	kf->q_pos	= (kf_is_finite(q_pos) && q_pos > 0.0f) ? q_pos : 1.0f;
-	kf->q_vel	= (kf_is_finite(q_vel) && q_vel > 0.0f) ? q_vel : 100.0f;
+	kf->sig_a2	= (kf_is_finite(sig_a2) && sig_a2 > 0.0f) ? sig_a2 : KF_DEFAULT_SIG_A2;
 	kf->max_cov	= KF_DEFAULT_MAX_COV;
 	kf->vel_max	= KF_DEFAULT_VEL_MAX;
 	kf->diverge_cnt = 0U;
@@ -104,12 +111,9 @@ void KF_SetDt(KF_t *kf, float dt) {
 	}
 }
 
-void KF_SetProcessNoise(KF_t *kf, float q_pos, float q_vel) {
-	if (kf_is_finite(q_pos) && q_pos > 0.0f) {
-		kf->q_pos = q_pos;
-	}
-	if (kf_is_finite(q_vel) && q_vel > 0.0f) {
-		kf->q_vel = q_vel;
+void KF_SetAccNoise(KF_t *kf, float sig_a2) {
+	if (kf_is_finite(sig_a2) && sig_a2 > 0.0f) {
+		kf->sig_a2 = sig_a2;
 	}
 }
 
@@ -134,40 +138,54 @@ void KF_Reset(KF_t *kf, float pos, float vel, float cov) {
 	kf->p00 = cov;
 	kf->p11 = cov;
 	kf->p01 = 0.0f;
-	kf->p10 = 0.0f;
 	kf->gate_streak = 0U;
 }
 
 /* ===================== 预测 / 更新 ======================================== */
 
-int KF_Predict(KF_t *kf) {
-	float dt = kf->dt;
-	float p00, p01, p10, p11;
+int KF_PredictAccel(KF_t *kf, float a) {
+	float	dt = kf->dt;
+	float	p00, p01, p11;
+	float	dt2, q00, q01, q11;
 
 	if (!kf_is_finite(dt) || dt <= 0.0f) {
 		return 0;
 	}
+	if (!kf_is_finite(a)) {
+		a = 0.0f;
+	}
 
-	/* 状态外推：pos' = pos + vel*dt */
-	kf->pos += kf->vel * dt;
+	/* 状态外推：a 为已知加速度，属确定性输入，不引入不确定度（Q 不变） */
+	kf->pos += kf->vel * dt + 0.5f * a * dt * dt;
+	kf->vel += a * dt;
 
-	/* 协方差传播：P' = F P F^T + Q（展开形式，避免矩阵库） */
+	/* 连续白噪声加速度模型的离散 Q：只用 sig_a2 一个参数，随 dt 自动缩放 */
+	dt2 = dt * dt;
+	q00 = kf->sig_a2 * dt2 * dt / 3.0f;
+	q01 = kf->sig_a2 * dt2 * 0.5f;
+	q11 = kf->sig_a2 * dt;
+
 	p00 = kf->p00;
 	p01 = kf->p01;
-	p10 = kf->p10;
 	p11 = kf->p11;
-	kf->p00 = p00 + dt * (p10 + p01) + dt * dt * p11 + kf->q_pos;
-	kf->p01 = p01 + dt * p11;
-	kf->p10 = p10 + dt * p11;
-	kf->p11 = p11 + kf->q_vel;
+
+	/* P' = F P F^T + Q（展开形式，利用对称性 p10 == p01） */
+	kf->p00 = p00 + 2.0f * dt * p01 + dt2 * p11 + q00;
+	kf->p01 = p01 + dt * p11 + q01;
+	kf->p11 = p11 + q11;
 
 	return kf_guard(kf);
+}
+
+/* 无控制输入的兼容入口，等价于 a = 0 */
+int KF_Predict(KF_t *kf) {
+	return KF_PredictAccel(kf, 0.0f);
 }
 
 /* 位置观测更新公共核（H=[1,0] 标量卡尔曼更新；输入合法性由调用方检查） */
 static int kf_update_pos_core(KF_t *kf, float z, float r) {
 	float s, k0, k1, innov;
-	float p00, p01, p10, p11;
+	float p00, p01, p11;
 
 	if (r < KF_R_MIN) {
 		r = KF_R_MIN;
@@ -175,25 +193,23 @@ static int kf_update_pos_core(KF_t *kf, float z, float r) {
 
 	p00 = kf->p00;
 	p01 = kf->p01;
-	p10 = kf->p10;
 	p11 = kf->p11;
 
-	/* H=[1,0]：S = p00 + R，K = [p00, p10]^T / S */
+	/* H=[1,0]：S = p00 + R，K = [p00, p01]^T / S */
 	s		= p00 + r;
 	k0		= p00 / s;
-	k1		= p10 / s;
+	k1		= p01 / s;
 	innov	= z - kf->pos;
 	kf->pos += k0 * innov;
 	kf->vel += k1 * innov;
 
-	/* P = (I - K H) P（简单形式；非 Joseph，舍入下不保证对称正定，
-	 *  故更新后强制对称平均 + 对角非负钳位，见 kf_sanitize_cov） */
+	/* P = (I - K H) P（简单形式；非 Joseph，舍入下对角可能变负，
+	 *  故更新后钳位非负，见 kf_clamp_cov） */
 	kf->p00 = (1.0f - k0) * p00;
 	kf->p01 = (1.0f - k0) * p01;
-	kf->p10 = p10 - k1 * p00;
 	kf->p11 = p11 - k1 * p01;
 
-	kf_sanitize_cov(kf);
+	kf_clamp_cov(kf);
 	kf_clamp_vel(kf);
 	return kf_guard(kf);
 }
@@ -233,7 +249,7 @@ int KF_UpdatePosGated(KF_t *kf, float z, float r, float gate_n) {
 
 int KF_UpdateVel(KF_t *kf, float z, float r) {
 	float s, k0, k1, innov;
-	float p00, p01, p10, p11;
+	float p00, p01, p11;
 
 	if (!kf_is_finite(z) || !kf_is_finite(r) || r <= 0.0f) {
 		return 0;
@@ -244,7 +260,6 @@ int KF_UpdateVel(KF_t *kf, float z, float r) {
 
 	p00 = kf->p00;
 	p01 = kf->p01;
-	p10 = kf->p10;
 	p11 = kf->p11;
 
 	/* H=[0,1]：S = p11 + R，K = [p01, p11]^T / S */
@@ -255,12 +270,11 @@ int KF_UpdateVel(KF_t *kf, float z, float r) {
 	kf->pos += k0 * innov;
 	kf->vel += k1 * innov;
 
-	kf->p00 = p00 - k0 * p10;
+	kf->p00 = p00 - k0 * p01;
 	kf->p01 = p01 - k0 * p11;
-	kf->p10 = (1.0f - k1) * p10;
 	kf->p11 = (1.0f - k1) * p11;
 
-	kf_sanitize_cov(kf);
+	kf_clamp_cov(kf);
 	kf_clamp_vel(kf);
 	return kf_guard(kf);
 }

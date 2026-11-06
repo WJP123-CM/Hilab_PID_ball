@@ -1,7 +1,7 @@
 /**
  ******************************************************************************
  * @file    tof_filter.c
- * @brief   VL53L1X 原始测距专用数字滤波器实现（中值-5 + 一阶 EMA）
+ * @brief   VL53L1X 原始测距专用数字滤波器实现（KF 主链 + 中值-3/EMA 对照链）
  *
  * ====================== 整体结构（四级流水线，逐帧调用） ======================
  *
@@ -28,6 +28,12 @@
  *  ┌─────────────┐   pos = filt_mm − zero_mm（远离传感器为正）
  *  │ 4. 零点换算  │   输出单位：0.1 cm（pos_cm_x10）
  *  └─────────────┘   zero_mm：Z 命令标定的静止零点距离
+ *
+ * ====================== KF 主链（与 EMA 并行，EMA 只作对照） ======================
+ *   每拍：KF_Predict(dt = 真实帧间隔，限幅 5~60ms)
+ *   有效帧：KF_UpdatePos(raw, R=3.5mm²)  ← 不加新息门控（实测会锁死）
+ *   输出：始终取 KF 位置；EMA 链照常运行，仅用于遥测对比与偏差告警
+ *         （实测自动回退只在传感器盲区触发，那里 EMA 同样不准，故不切换）
  *
  * ====================== 可配置参数（宏 + 运行时接口） ======================
  *
@@ -59,7 +65,7 @@
  *     累积截断误差；输出时四舍五入到 mm。
  *   - 中值排序在局部栈数组 v[N] 上做插入排序，不占用实例 RAM；
  *     N≤3 时排序开销为常数级。
- *   - 所有运算为纯整数，不依赖 libm/HAL，可在 50 Hz 主循环直接调用。
+ *   - EMA 链为纯整数；KF 主链为浮点（仍不依赖 libm/HAL），时间基准由调用方传入。
  *
  * ====================== 延迟构成（50 Hz，T=20 ms） ======================
  *
@@ -131,6 +137,12 @@ void TofFilter_Reset(TofFilter_t *f) {
 	f->last_raw_mm	= 0;
 	f->last_filt_mm	= 0;
 	f->has_output	= false;
+
+	/* KF 主链：下次有效帧重新初始化；诊断计数一并清零 */
+	f->kf_last_ms	 = 0u;
+	f->kf_bad_streak = 0u;
+	f->kf_miss		 = 0u;
+	f->kf_ready		 = false;
 }
 
 /**
@@ -194,47 +206,120 @@ bool TofFilter_ZeroHere(TofFilter_t *f) {
 }
 
 /**
- * @brief 推入一帧原始测距值并推进滤波链（中值-3 → EMA）
+ * @brief 推入一帧原始测距值并推进滤波链（KF 主链 + 中值-3/EMA 对照链）
  * @param  raw_mm       原始距离（mm）；range_status 传感器状态（0 = 有效）
- * @retval true = 本帧有效并已更新输出；false = 被拒（状态非 0），输出保持
- * @note   调用周期须与传感器帧率一致（本工程 50Hz）
+ * @param  now_ms       本拍时刻（HAL_GetTick），供 KF 计算真实 dt
+ * @retval true = 本帧有效并已更新输出；false = 被拒（状态非 0 / 越界），输出保持
+ * @note   调用周期须与传感器帧率一致（本工程 50Hz）；无效帧仍推进 KF 预测
  */
-bool TofFilter_Update(TofFilter_t *f, int16_t raw_mm, int8_t range_status) {
+bool TofFilter_Update(TofFilter_t *f, int16_t raw_mm, int8_t range_status, uint32_t now_ms) {
 	int16_t med;
 	int32_t target_milli;
+	int16_t ema_mm;
+	float	dt;
+	float	kf_pos;
+	float	diff;
+	bool	valid;
+	bool	accepted = false;
 
 	if (f == 0) {
 		return false;
 	}
 
-	/* 无效帧/越界值：不进入窗口，输出保持上一有效值。
-	 * 2026-10-31 量程门放宽为 [8, 500]mm：只挡近距盲区读数与超量程垃圾值 */
-	if (range_status != 0) {
-		return false;
-	}
-	if (raw_mm < f->min_valid_mm || raw_mm > f->max_valid_mm) {
-		return false;
-	}
+	/* 有效性门限：状态为 0 且原始距离在量程内（与接入 KF 前一致） */
+	valid = (range_status == 0) && (raw_mm >= f->min_valid_mm) && (raw_mm <= f->max_valid_mm);
 
-	f->last_raw_mm				= raw_mm;
-	f->med_buf[f->med_idx]		= raw_mm;
-	f->med_idx					= (uint8_t) ((f->med_idx + 1u) % TOF_FILTER_MEDIAN_N);
-	if (f->med_filled < TOF_FILTER_MEDIAN_N) {
-		f->med_filled++;
-	}
-	med = median_of(f->med_buf, f->med_filled);
-
-	/* EMA：首次有效输出直接对齐中值，避免上电从 0 缓慢爬升 */
-	target_milli = (int32_t) med * 1000;
-	if (!f->has_output) {
-		f->ema_milli_mm = target_milli;
-		f->has_output	= true;
+	/* ---- KF：首帧有效观测时初始化，之后每次调用推进一拍（dt 取真实间隔） ---- */
+	if (!f->kf_ready) {
+		if (valid) {
+			KF_Init(&f->kf, (float) raw_mm, 0.0f, TOF_KF_DT_DEFAULT, TOF_KF_SIG_A2, 1000.0f);
+			KF_SetVelLimit(&f->kf, TOF_KF_VEL_MAX);
+			f->kf_last_ms = now_ms;
+			f->kf_ready	  = true;
+		}
 	} else {
-		f->ema_milli_mm += ((int32_t) f->alpha_milli * (target_milli - f->ema_milli_mm)) / 1000;
+		dt			  = (float) (now_ms - f->kf_last_ms) / 1000.0f;
+		f->kf_last_ms = now_ms;
+		if (dt < 0.005f) {
+			dt = 0.005f; /* 同拍重复调用保护 */
+		}
+		if (dt > 0.060f) {
+			dt = 0.060f; /* 主循环卡顿：压到 60ms，避免 Q 与协方差突跳 */
+		}
+		KF_SetDt(&f->kf, dt);
+		KF_Predict(&f->kf); /* 无效帧也要预测，协方差自然增长 */
 	}
 
-	f->last_filt_mm = (int16_t) ((f->ema_milli_mm + 500) / 1000);
-	return true;
+	if (!valid) {
+		if (f->kf_miss < 255u) {
+			f->kf_miss++;
+		}
+	} else {
+		f->kf_miss	   = 0u;
+		f->last_raw_mm = raw_mm;
+
+		/* ---- EMA 链：保持原实现，仅作对照与遥测 ---- */
+		f->med_buf[f->med_idx] = raw_mm;
+		f->med_idx			   = (uint8_t) ((f->med_idx + 1u) % TOF_FILTER_MEDIAN_N);
+		if (f->med_filled < TOF_FILTER_MEDIAN_N) {
+			f->med_filled++;
+		}
+		med = median_of(f->med_buf, f->med_filled);
+
+		/* EMA：首次有效输出直接对齐中值，避免上电从 0 缓慢爬升 */
+		target_milli = (int32_t) med * 1000;
+		if (!f->has_output) {
+			f->ema_milli_mm = target_milli;
+			f->has_output	= true;
+		} else {
+			f->ema_milli_mm += ((int32_t) f->alpha_milli * (target_milli - f->ema_milli_mm)) / 1000;
+		}
+
+		/* ---- KF 观测更新：新息门控（零延迟削峰） ----
+		 * KF 有速度预测后正常运动的新息≈纯噪声（±2mm），5σ 门限不会误判；
+		 * 单帧尖峰（实测 332mm vs 真实 124mm）新息达 208mm，当帧即被拒绝。
+		 * 连续 3 拍越限会自动放行（KF_GATE_RELEASE_N），真实阶跃不受影响。 */
+		accepted = true;
+		if (f->kf_ready) {
+			if (KF_UpdatePosGated(&f->kf, (float) raw_mm, TOF_KF_R, TOF_KF_GATE_N) == 2) {
+				accepted = false; /* 本帧观测判为离群：KF 只保留预测 */
+				if (f->kf_miss < 255u) {
+					f->kf_miss++;
+				}
+			}
+		}
+	}
+
+	if (!f->has_output) {
+		return accepted; /* 尚无有效帧：last_filt_mm 保持初值 0 */
+	}
+
+	ema_mm = (int16_t) ((f->ema_milli_mm + 500) / 1000);
+
+	if (!f->kf_ready) {
+		f->last_filt_mm = ema_mm; /* 理论上与 has_output 同步，兜底 */
+		return accepted;
+	}
+
+	/* ---- 输出：始终取 KF；EMA 只算不选，供遥测对比与排查 ---- */
+	kf_pos = KF_GetPos(&f->kf);
+	diff   = kf_pos - (float) ema_mm;
+	if (diff < 0.0f) {
+		diff = -diff;
+	}
+
+	/* 偏差超限只累计计数并上报（kf_state），不切换输出：
+	 * 实测触发位置全在传感器盲区，那里 EMA 同样不准，切换反而把 KF 拖旧 */
+	if (diff > TOF_KF_GUARD_MM) {
+		if (f->kf_bad_streak < 255u) {
+			f->kf_bad_streak++;
+		}
+	} else {
+		f->kf_bad_streak = 0u;
+	}
+
+	f->last_filt_mm = (int16_t) (kf_pos + 0.5f);
+	return accepted;
 }
 
 /**
@@ -255,4 +340,79 @@ int16_t TofFilter_GetCmX10(const TofFilter_t *f) {
 		v = -32768;
 	}
 	return (int16_t) v;
+}
+
+/**
+ * @brief 位置外推到 now_ms 时刻（0.1cm），消除"上次采样到现在"的滞后
+ * @param f 滤波器实例；now_ms 当前时刻（HAL_GetTick）
+ * @retval 相对零点的位置（0.1cm）；无有效输出为 0
+ * @note  外部按绝对时间差计算，每次调用独立重算，不累积、不改写 KF 状态。
+ *        Δt 压到 1.5 帧以内、外推量限幅 ±TOF_KF_PRED_MAX_MM，
+ *        防止主循环卡顿或长时间无观测时速度漂移被放大。
+ */
+int16_t TofFilter_GetCmX10At(const TofFilter_t *f, uint32_t now_ms) {
+	float	dtp, dp, rel, vel, av, w;
+	int32_t v;
+
+	if (f == 0 || !f->has_output) {
+		return 0;
+	}
+
+	/* 对照实验：输出切到 EMA 链（无速度估计，故不外推） */
+	if (f->out_use_ema) {
+		v = (int32_t) ((f->ema_milli_mm + 500) / 1000) - (int32_t) f->zero_mm;
+		if (v > 32767) {
+			v = 32767;
+		} else if (v < -32768) {
+			v = -32768;
+		}
+		return (int16_t) v;
+	}
+
+	if (!f->kf_ready) {
+		v = (int32_t) f->last_filt_mm - (int32_t) f->zero_mm;
+	} else {
+		dtp = (float) (uint32_t) (now_ms - f->kf_last_ms) * 0.001f;
+		if (dtp > TOF_KF_PRED_DT_MAX) {
+			dtp = TOF_KF_PRED_DT_MAX;
+		}
+
+		/* 速度死区 + 线性过渡：静止时速度估计有 ±30mm/s 噪声，
+		 * 直接乘 dt 会让静止输出 σ 增大 25%；|v| 低于 VMIN 时不外推 */
+		vel = KF_GetVel(&f->kf);
+		av	= (vel >= 0.0f) ? vel : -vel;
+		if (av <= TOF_KF_PRED_VMIN) {
+			dp = 0.0f;
+		} else {
+			w = (av >= TOF_KF_PRED_VMAX)
+					? 1.0f
+					: (av - TOF_KF_PRED_VMIN) / (TOF_KF_PRED_VMAX - TOF_KF_PRED_VMIN);
+			dp = vel * dtp * w;
+			if (dp > TOF_KF_PRED_MAX_MM) {
+				dp = TOF_KF_PRED_MAX_MM;
+			} else if (dp < -TOF_KF_PRED_MAX_MM) {
+				dp = -TOF_KF_PRED_MAX_MM;
+			}
+		}
+
+		rel = KF_GetPos(&f->kf) + dp - (float) f->zero_mm;
+		v	= (int32_t) (rel + (rel >= 0.0f ? 0.5f : -0.5f));
+	}
+
+	if (v > 32767) {
+		v = 32767;
+	} else if (v < -32768) {
+		v = -32768;
+	}
+	return (int16_t) v;
+}
+
+/**
+ * @brief 选择输出源（KF / EMA 对照实验用）
+ * @param use_ema true = 取 EMA 链；false = 取 KF（默认）
+ */
+void TofFilter_SetOutputEma(TofFilter_t *f, bool use_ema) {
+	if (f != 0) {
+		f->out_use_ema = use_ema;
+	}
 }

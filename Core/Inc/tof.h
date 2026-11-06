@@ -70,8 +70,11 @@ void Tof_GetRuntimeCfg(TofRuntimeCfg_t *cfg, const TofFilter_t *f);
  * 对齐读在 Cortex-M3 上原子，安全）；其余字段仅 20Hz 主循环访问，故不加 volatile。 */
 typedef struct {
 	int16_t		 raw_mm;	   /* 本帧原始距离（mm），无效帧为 0 */
-	int16_t		 filt_mm;	   /* 滤波后距离（mm） */
+	int16_t		 filt_mm;	   /* 最终滤波输出（mm）：KF 主链或 EMA（回退时） */
 	int16_t		 pos_cm_x10;   /* 相对零点的位置（0.1cm） */
+	int16_t		 ema_mm;	   /* EMA 链输出（mm）：KF 回退基准，仅观测用 */
+	int16_t		 kf_vel;	   /* KF 速度估计（mm/s），仅观测用 */
+	uint8_t		 kf_state;	   /* bit0=回退EMA；bit1~4=bad_streak(0~15)；bit5~7=kf_miss(0~7) */
 	int8_t		 range_status; /* 0=有效；-1/-2=通信；-3=越出 [8,500]mm 量程门 */
 	uint8_t		 valid_pct;	   /* 最近窗口有效帧占比 0~100 */
 	uint16_t	 alpha_milli;  /* 当前 EMA 系数（千分比） */

@@ -1,5 +1,7 @@
 /* USER CODE BEGIN Header */
-/**
+/**C:/msys64/msys2_shell.cmd -defterm -no-start -use-full-path -here -ucrt64 -c "cmake --build build/Debug"
+C:/msys64/msys2_shell.cmd -defterm -no-start -use-full-path -here -ucrt64 -c "openocd -f openocd_stlink.cfg -c 'program
+build/Debug/Hilab_PID.elf verify reset exit'"
  ******************************************************************************
  * @file           : main.c
  * @brief          : Main program body
@@ -18,13 +20,12 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-
 #include "dma.h"
-#include "gpio.h"
 #include "i2c.h"
 #include "iwdg.h"
 #include "tim.h"
 #include "usart.h"
+#include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -58,7 +59,7 @@
 #define OLED_PERIOD_MS		200u				  /* OLED 页面内容更新：5Hz（主循环执行） */
 #define OLED_TICK_PERIOD_MS 25u					  /* OLED 逐页回写：25ms 一页，8 页整屏 200ms */
 #define VOFA_PERIOD_MS	 Inner_PERIOD_MS	   /* VOFA 20ms 1次 */
-#define TOF_PERIOD_MS		Inner_PERIOD_MS		  /* TOF 20ms 1次 */
+#define TOF_PERIOD_MS		20					  /* TOF 20ms 1次 */
 #define ENCODER_PERIOD_MS	20					  /* 编码器 50ms 1次 */
 #define ENC_TICK_PERIOD_MS	20					  /* 编码器 50ms 1次 */
 #define TOF_TICK_PERIOD_MS	20					  /* TOF 20ms 1次 */
@@ -68,6 +69,11 @@
 #define BALL_POS_HZ_SIGN	  1
 #define BALL_POS_HZ_DIR		  (BALL_POS_HZ_SIGN ? -1.0f : 1.0f) // 正相关（pos>0 时 freq>0）
 #define BALL_KP_HZ_PER_CM_X10 4.0f								/* Hz / 0.1cm 偏差（pos=30 即 3cm 时 120Hz） */
+#define BALL_VEL_DAMP		  0.1f	/* 外环速度阻尼系数 counts/(mm/s)：
+									 * 用 KF 速度估计替代误差差分做阻尼，
+									 * 噪声比 Kd 差分低约 3 倍、且无滞后。
+									 * 200mm/s 时产生 20 counts 阻尼 */
+#define BALL_VEL_DAMP_MAX	  30.0f /* 阻尼项限幅：防止叠加后把 ball_out 推饱和 */
 #define MOTOR_CONTROL_ENABLE  1
 #define ZERO_THETA			  660
 /* USER CODE END PD */
@@ -81,7 +87,10 @@
 
 /* USER CODE BEGIN PV */
 /* ---- 串口 RX 解析结果（文件级，主循环读写） ---- */
-#define RX_VAL_MAX 5u						/* 一行最多解析 5 个逗号分隔数值：Kp,Ki,Kd,brake_gain,brake_min */
+#define RX_VAL_MAX 7u   /* 一行最多解析 7 个逗号分隔数值：
+						 * Kp,Ki,Kd,brake_gain,brake_min,src,target
+						 * src: 0/省略 = KF 输出（默认），1 = EMA 输出（仅对照实验）
+						 * target: 外环目标位置，单位 0.1cm（正 = 球靠近传感器） */
 static float			rx_val[RX_VAL_MAX]; /* 解析出的数值（支持小数） */
 static uint8_t			rx_cnt	 = 0;		/* 本行实际解析出的个数（0~RX_VAL_MAX） */
 static volatile uint8_t rx_valid = 0;		/* 1 = 收到新参数行，等主循环接管写入一次 */
@@ -98,16 +107,21 @@ static volatile uint32_t enc_tick		= 0;
 /* 主循环心跳：1 = 最近 1s 内主循环至少跑过一圈；ISR 据此决定是否喂狗 */
 static volatile uint8_t loop_alive = 0;
 bool					runstate   = 1; /* 默认上电即运行，按键单击翻转为停止 */
-/* ---- 位置外环 PID（ToF 反馈 → 内环位置目标 counts） ---- */
+/* ---- 位置外环 PID（ToF 反馈 → 内环位置目标 counts） ----
+ * 上电默认值 = 2026-11-06 实测最优（见 .trae/documents/摆杆闭环调参与KF实测记录.md 第六章）：
+ * 收敛 5s、过冲 14~29mm、稳态 σ 1.4~2.9mm。上位机不发参数时也必须能稳住，
+ * 故这里直接写最优值，不再保留旧的 Kp=5/Kd=40/brake=4 整定起点。 */
 PID_t ball_pid = {
-	.Kp			= 5.0f,
+	.Kp			= 2.0f,
 	.Ki			= 0.0f,
-	.Kd			= 40.0f,
+	.Kd			= 15.0f,
 	.OutMin		= -200.0f,
 	.OutMax		= 200.0f,
-	.i_limit	= 0.0f,
+	/* 积分限幅：0 表示不限幅（无限累积 → 积分饱和）。摩擦死区约 15 counts，
+	 * 稳态输出全由积分提供时 ErrorInt ≈ 15/Ki（Ki=0.1 → 150），故留 2 倍裕量 */
+	.i_limit	= 300.0f,
 	.Target		= 0.0f,
-	.brake_gain = 4.0f,
+	.brake_gain = 20.0f, /* 包络增益上限：25 卡死（偏差 47mm）、35/50 极限环 */
 	.brake_min	= 0.5f,
 	.Out		= 200.0f,
 };
@@ -251,9 +265,37 @@ int main(void)
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1) {
-	  /* USER CODE END WHILE */
+    /* USER CODE END WHILE */
 
-	  /* USER CODE BEGIN 3 */
+    /* USER CODE BEGIN 3 */
+	  /* 串口参数接管：仅在收到新参数行时写入一次，禁止每圈无条件覆盖 */
+	  if (rx_valid) {
+		  rx_valid = 0;
+		  if (rx_cnt > 0) ball_pid.Kp = rx_val[0];
+		  /* Ki 用千分比：100 = 0.1。积分项必然是小数量级，整数无法表示 */
+		  if (rx_cnt > 1) ball_pid.Ki = rx_val[1] * 0.001f;
+		  if (rx_cnt > 2) ball_pid.Kd = rx_val[2];
+		  if (rx_cnt > 3) ball_pid.brake_gain = rx_val[3];
+		  /* brake_min 用千分比：500 = 0.5 counts。其余参数全整数解析，
+		   * 以避开 strtof（会拉入约 18KB 浮点库，Flash 容量不够） */
+		  if (rx_cnt > 4) ball_pid.brake_min = rx_val[4] * 0.001f;
+		  /* 第 6 个参数：输出源切换，0/省略 = KF（默认），1 = EMA（对照实验） */
+		  if (rx_cnt > 5) TofFilter_SetOutputEma(&g_tof_filter, rx_val[5] > 0.5f);
+		  /* 第 7 个参数：外环目标（0.1cm）。只在收到命令时写一次，不再每周期覆盖。
+		   * 符号链：pos = filt − zero，Actual = −pos，故稳态 pos = −Target，
+		   * 即 filt = zero − Target。限幅直接按"球到传感器的距离"设定，
+		   * 不再按 Target 的正负写上下限（那样会把方向搞反） */
+		  if (rx_cnt > 6) {
+			  float filt = (float) g_tof_filter.zero_mm - rx_val[6];
+
+			  if (filt > 431.0f) {
+				  filt = 431.0f; /* 远端上限 */
+			  } else if (filt < 21.0f) {
+				  filt = 21.0f; /* 近端下限：避开传感器盲区 */
+			  }
+			  ball_pid.Target = (float) g_tof_filter.zero_mm - filt;
+		  }
+	  }
 	  if (tof_tick) {
 		  tof_tick = 0;
 		  Tof_Tick(&g_tof_filter);
@@ -271,17 +313,22 @@ int main(void)
 
 	  /* 外环（100ms）：位置 PID → 内环位置目标 */
 
-	  /* 内环（20ms）：编码器位置反馈 + 位置 PID → 电机频率 */
-	  if (inner_tick) {
-		  inner_tick = 0;
-	  }
+	  /* 编码器采样只在 TIM1 ISR 里做（20ms 一次，见 HAL_TIM_PeriodElapsedCallback）：
+	   * Encoder_Tick 读 CNT→算差分→写 s_enc_last 不是原子操作，主循环会被 ToF 的
+	   * I2C 阻塞拉长，若再在这里调一次，中断插进读写之间就会重复计数 */
 
-	  /* VOFA 遥测：ch0=pos_cm_x10 / ch1=enc_target / ch2=enc_actual / ch3=pulse_freq / ch4=tof_status */
+	  /* VOFA 遥测（10 通道，顺序须与 assets/channels.json 一致）：
+	   * ch0 enc_target  ch1 enc_actual  ch2 enc_out_hz  ch3 ball_target
+	   * ch4 raw_mm      ch5 ema_mm      ch6 kf_pos      ch7 kf_vel
+	   * ch8 kf_state    ch9 ball_out
+	   * kf_state 位域：bit0=回退 EMA，bit1~4=bad_streak(0~15)，bit5~7=kf_miss(0~7) */
 	  if (vofa_tick) {
-		  vofa_tick		  = 0;
-		  int32_t vofa[6] = {(int32_t) encoder_pid.Target, (int32_t) encoder_pid.Actual, (int32_t) encoder_pid.Out,
-							 (int32_t) ball_pid.Target,	   (int32_t) ball_pid.Actual,	 (int32_t) ball_pid.Out};
-		  VOFA_SendFrame(vofa, 6);
+		  vofa_tick		   = 0;
+		  int32_t vofa[10] = {(int32_t) encoder_pid.Target, (int32_t) encoder_pid.Actual, (int32_t) encoder_pid.Out,
+							  (int32_t) ball_pid.Target,	   (int32_t) g_tof.raw_mm,		  (int32_t) g_tof.ema_mm,
+							  (int32_t) g_tof.filt_mm,	   (int32_t) g_tof.kf_vel,		  (int32_t) g_tof.kf_state,
+							  (int32_t) ball_pid.Out};
+		  VOFA_SendFrame(vofa, 10);
 	  }
 
 	  /* 100ms：读最新 RX 行、按逗号分隔解析整数 */
@@ -302,7 +349,7 @@ int main(void)
 				  if (end == p) {
 					  break;
 				  }
-				  rx_val[rx_cnt++] = (int32_t) v;
+				  rx_val[rx_cnt++] = (float) v;
 				  p				   = end;
 				  if (*p == ',') {
 					  p++;
@@ -311,6 +358,7 @@ int main(void)
 				  break;
 			  }
 			  uart1_last_ready = 0;
+			  rx_valid		   = 1; /* 新参数行，待主循环接管写入一次 */
 		  }
 	  }
 
@@ -330,7 +378,7 @@ int main(void)
 
 			for (uint8_t i = 0; i < rx_cnt && i < RX_VAL_MAX; i++) {
 				if (i) *p++ = ',';
-				p += snprintf(p, sizeof(rx_str) - (size_t) (p - rx_str), "%ld", (long) rx_val[i]);
+				p += snprintf(p, sizeof(rx_str) - (size_t) (p - rx_str), "%d", (int) rx_val[i]);
 			}
 			*p = '\0';
 
@@ -414,27 +462,48 @@ void SystemClock_Config(void)
  */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 	static uint16_t tick_ms = 0;
+	static uint8_t	ctrl_tick = 0;
 
 	if (htim->Instance != TIM1) {
 		return;
 	}
 	/* 编码器 50ms 1次 */
 	if ((tick_ms % TOF_PERIOD_MS) == 0) {
-		HAL_IWDG_Refresh(&hiwdg);
+		tof_tick = 1;
 	}
 	if ((tick_ms % ENCODER_PERIOD_MS) == 0) {
 		Encoder_Tick();
-		HAL_IWDG_Refresh(&hiwdg);
 	}
 
 	if (++tick_ms >= 1000u) {
 		tick_ms = 0;
+		if (++ctrl_tick >= 1) {
+			ctrl_tick = 0;
+			// ball_pid.Out = -ball_pid.Out;
+		}
 	}
 	if (tick_ms % Outter_PERIOD_MS == 0) {
-		ball_pid.Target = 0.0f;
-		ball_pid.Actual = -(float) g_tof.pos_cm_x10;
+		/* Target 由串口命令设定（第 7 个参数），此处不再周期覆盖；
+		 * pos_cm_x10 取负号后作为反馈，故 Target>0 表示球向传感器方向移动 */
+		/* 外推位置：用 KF 速度把上一帧位置补到当前时刻，消除 0~34ms 采样滞后。
+		 * 限幅与回退判断都在 TofFilter_GetCmX10At 内部，ISR 里只做一次调用 */
+		float damp;
+
+		ball_pid.Actual = -(float) TofFilter_GetCmX10At(&g_tof_filter, HAL_GetTick());
 		PID_Update(&ball_pid);
-		encoder_pid.Target = ball_pid.Out + ZERO_THETA;
+
+		/* 速度阻尼：用 KF 的无滞后速度估计替代误差差分 D 项。
+		 * Actual = -(pos)，故 de/dt = +kf_vel，阻尼取正号（球远离时增强回拉）。
+		 * 单独限幅，避免叠加后把内环目标推饱和 */
+		damp = BALL_VEL_DAMP * KF_GetVel(&g_tof_filter.kf);
+		if (!g_tof_filter.kf_ready || g_tof_filter.out_use_ema) {
+			damp = 0.0f; /* KF 未就绪或对照实验走 EMA 时，无速度估计可用 */
+		} else if (damp > BALL_VEL_DAMP_MAX) {
+			damp = BALL_VEL_DAMP_MAX;
+		} else if (damp < -BALL_VEL_DAMP_MAX) {
+			damp = -BALL_VEL_DAMP_MAX;
+		}
+		encoder_pid.Target = ball_pid.Out + damp + ZERO_THETA;
 	}
 	if ((tick_ms % Inner_PERIOD_MS) == 0) {
 		inner_tick		   = 1;
