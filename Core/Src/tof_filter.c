@@ -143,6 +143,9 @@ void TofFilter_Reset(TofFilter_t *f) {
 	f->kf_bad_streak = 0u;
 	f->kf_miss		 = 0u;
 	f->kf_ready		 = false;
+	/* 上电后到第一帧有效数据之前，外环不应基于无效数据动作 */
+	f->last_valid_ms = 0u;
+	f->stale		 = true;
 }
 
 /**
@@ -229,6 +232,21 @@ bool TofFilter_Update(TofFilter_t *f, int16_t raw_mm, int8_t range_status, uint3
 	/* 有效性门限：状态为 0 且原始距离在量程内（与接入 KF 前一致） */
 	valid = (range_status == 0) && (raw_mm >= f->min_valid_mm) && (raw_mm <= f->max_valid_mm);
 
+	/* ---- 数据过期判定（必须先于预测）----
+	 * 超过 TOF_STALE_MS 没有有效帧：停止 KF 预测并置 stale，外环据此冻结输出。
+	 * 否则 KF 会按最后速度一直外推（实测 -24mm/s × 90s ≈ 2m），把外环推到饱和、
+	 * 杆顶到机械限位。恢复时用本帧真实测距重新播种，丢弃漂移后的旧状态。 */
+	if (valid) {
+		if (f->stale && f->kf_ready) {
+			KF_Reset(&f->kf, (float) raw_mm, 0.0f, 1000.0f);
+			f->kf_last_ms = now_ms;
+		}
+		f->last_valid_ms = now_ms;
+		f->stale		 = false;
+	} else if ((uint32_t) (now_ms - f->last_valid_ms) > TOF_STALE_MS) {
+		f->stale = true;
+	}
+
 	/* ---- KF：首帧有效观测时初始化，之后每次调用推进一拍（dt 取真实间隔） ---- */
 	if (!f->kf_ready) {
 		if (valid) {
@@ -237,7 +255,7 @@ bool TofFilter_Update(TofFilter_t *f, int16_t raw_mm, int8_t range_status, uint3
 			f->kf_last_ms = now_ms;
 			f->kf_ready	  = true;
 		}
-	} else {
+	} else if (!f->stale) {
 		dt			  = (float) (now_ms - f->kf_last_ms) / 1000.0f;
 		f->kf_last_ms = now_ms;
 		if (dt < 0.005f) {
@@ -247,7 +265,7 @@ bool TofFilter_Update(TofFilter_t *f, int16_t raw_mm, int8_t range_status, uint3
 			dt = 0.060f; /* 主循环卡顿：压到 60ms，避免 Q 与协方差突跳 */
 		}
 		KF_SetDt(&f->kf, dt);
-		KF_Predict(&f->kf); /* 无效帧也要预测，协方差自然增长 */
+		KF_Predict(&f->kf); /* 无效帧也要预测，协方差自然增长；过期后不再预测 */
 	}
 
 	if (!valid) {
@@ -369,7 +387,8 @@ int16_t TofFilter_GetCmX10At(const TofFilter_t *f, uint32_t now_ms) {
 		return (int16_t) v;
 	}
 
-	if (!f->kf_ready) {
+	if (!f->kf_ready || f->stale) {
+		/* 未初始化或数据过期：返回最后一次有效滤波值（冻结），不做速度外推 */
 		v = (int32_t) f->last_filt_mm - (int32_t) f->zero_mm;
 	} else {
 		dtp = (float) (uint32_t) (now_ms - f->kf_last_ms) * 0.001f;
@@ -405,6 +424,15 @@ int16_t TofFilter_GetCmX10At(const TofFilter_t *f, uint32_t now_ms) {
 		v = -32768;
 	}
 	return (int16_t) v;
+}
+
+/**
+ * @brief 数据是否过期（超过 TOF_STALE_MS 没有有效帧）
+ * @retval true = KF 已停止预测、输出为最后一次有效值（冻结）
+ * @note  过期期间外环应停止积分；P/D 因位置冻结而自动保持
+ */
+bool TofFilter_IsStale(const TofFilter_t *f) {
+	return (f != 0) && f->stale;
 }
 
 /**

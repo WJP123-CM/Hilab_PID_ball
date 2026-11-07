@@ -8,6 +8,7 @@
  *            Error0 / Error1 / ErrorInt（误差与积分）
  *            OutMax / OutMin（输出限幅）
  *          位置式核心：Out = Kp*Error0 + Ki*ErrorInt + Kd*(Error0 - Error1)
+ *          （use_vel_d=1 时最后一项改为 Kd*Vel，Vel 为调用方给的外部速度）
  *          PID_Update 仅接收结构体指针：调用方先写 Target/Actual，再读 Out。
  *          本模块只做算术运算，不依赖任何 HAL/外设，可在 ISR 或主循环中直接调用。
  *          注意：F103 无 FPU，float 为软件浮点；按 50Hz 以下控制频率使用开销可忽略，
@@ -59,6 +60,14 @@ typedef struct {
 
 	float brake_gain;
 	float brake_min;
+
+	/* ---- 扩展：D 项速度源（use_vel_d = 1 时启用） ----
+	 * Vel 由调用方写入，单位与 Error 相同、表示"每采样步的误差增量"
+	 * （即 de/dt × Ts）。启用后 D 项不再对 Error0−Error1 做差分，
+	 * 可直接使用外部速度估计（本工程为 KF 速度），避免差分放大噪声。
+	 * use_vel_d = 0（默认）时行为与原实现完全一致。 */
+	float	Vel;
+	uint8_t use_vel_d;
 } PID_t;
 
 /**

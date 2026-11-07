@@ -55,7 +55,13 @@ extern "C" {
  *   sig=1e5 等效滞后 0.7ms（EMA 为 37.1ms）、静止 σ=1.50mm（EMA 1.21mm）；
  *   3σ 新息门控在正常运动下会锁死（每拍位移 8mm > 门限 7.6mm），故用不带门控的
  *   KF_UpdatePos，异常帧交给上面的状态/量程门限。 */
-#define TOF_KF_SIG_A2	   1.0e5f  /* 过程噪声-加速度方差 (mm²/s⁴) */
+#define TOF_KF_SIG_A2	   3.0e3f  /* 过程噪声-加速度方差 (mm²/s⁴)：
+									* 2026-11-07 由 1e5 降至 3e3。旧整定以位置 RMSE 为判据，
+									* 1e4 时"位置滞后 +0.65mm 换噪声 -0.25mm"判净亏；
+									* 但当时 D 用位置差分，KF 速度噪声根本不进环路。
+									* 实测位置差分 D 自身贡献 ball_out σ≈32 counts，
+									* 故改由 KF 速度做唯一 D 源，需先压低速度噪声：
+									* 预期 σ_v 32→~7mm/s，代价是快速段速度滞后约 +40ms。 */
 #define TOF_KF_R		   3.5f	   /* 观测噪声方差 (mm²)：静止实测 σ=1.87mm */
 #define TOF_KF_DT_DEFAULT  0.034f  /* 首帧 dt 兜底（10 通道实测帧间隔中位 34.3ms） */
 #define TOF_KF_VEL_MAX	   800.0f  /* 速度限幅 mm/s（实测球速 max 768、p99 533） */
@@ -68,6 +74,8 @@ extern "C" {
 									* 不能用 TOF_KF_DT_DEFAULT（34ms）推，那会放到 51ms≈2.6 帧 */
 #define TOF_KF_PRED_VMIN   80.0f   /* 外推速度下限（mm/s）：|v| 低于此值不外推，抑制静止抖动 */
 #define TOF_KF_PRED_VMAX   200.0f  /* 外推速度上限（mm/s）：|v| 达到此值全额外推，中间线性过渡 */
+#define TOF_STALE_MS	   200u    /* 无有效帧超时（ms）：超过则停止 KF 预测并置 stale，
+									* 外环据此冻结输出（否则 KF 会按最后速度无限外推） */
 
 typedef struct {
 	/* 中值窗口 */
@@ -96,6 +104,8 @@ typedef struct {
 	uint8_t  kf_miss;		/* 连续无有效观测拍数（只上报） */
 	bool     kf_ready;		/* KF 已用首帧有效值初始化 */
 	bool     out_use_ema;	/* true = 输出取 EMA 链（仅对照实验用，默认 false） */
+	uint32_t last_valid_ms; /* 最近一次有效帧时刻（HAL_GetTick），过期判据用 */
+	bool     stale;			/* true = 超过 TOF_STALE_MS 无有效帧（KF 停预测，外环冻结） */
 } TofFilter_t;
 
 /** @brief 初始化滤波器（配置 alpha/零点/有效范围并清空运行态） */
@@ -144,6 +154,13 @@ int16_t TofFilter_GetCmX10(const TofFilter_t *f);
  *         无阻塞、不访问外设，可在 1ms ISR 内调用。
  */
 int16_t TofFilter_GetCmX10At(const TofFilter_t *f, uint32_t now_ms);
+
+/**
+ * @brief 数据是否过期（超过 TOF_STALE_MS 没有有效帧）
+ * @retval true = KF 已停止预测、输出为最后一次有效值（冻结）
+ * @note  过期期间外环应停止积分；P/D 因位置冻结而自动保持
+ */
+bool TofFilter_IsStale(const TofFilter_t *f);
 
 /**
  * @brief 选择输出源（仅用于 KF / EMA 对照实验与故障排查）

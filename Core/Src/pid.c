@@ -74,6 +74,8 @@ void PID_Reset(PID_t *pid) {
  *         调用周期须与增益离散化时的采样周期一致（本工程内环 50Hz）。
  */
 void PID_Update(PID_t *pid) {
+	float d_src; /* D 项源：误差差分，或调用方给的外部速度（每拍增量） */
+
 	/* 0) 死区判断：误差进入 ±deadzone 时保持上一拍 Out（不重算、不积分），
 	 *    闭环靠上一拍输出维持当前状态，避免在目标附近来回抖。
 	 *    例外：Target=0（停机）必须走正常计算，否则输出停在死区里后
@@ -105,8 +107,12 @@ void PID_Update(PID_t *pid) {
 		}
 	}
 
+	/* 4) D 项源：默认对误差做差分；use_vel_d=1 时直接用调用方给的外部速度，
+	 *    避免差分把测量噪声再放大一次（本工程外环用 KF 速度） */
+	d_src = pid->use_vel_d ? pid->Vel : (pid->Error0 - pid->Error1);
+
 	/* 4) 位置式 PID 输出 */
-	pid->Out = pid->Kp * pid->Error0 + pid->Ki * pid->ErrorInt + pid->Kd * (pid->Error0 - pid->Error1);
+	pid->Out = pid->Kp * pid->Error0 + pid->Ki * pid->ErrorInt + pid->Kd * d_src;
 
 	/* 4.5) 制动包络（brake_gain > 0 启用）：Out 权限随剩余误差 √(2·K·|e|) 收缩，
 	 *      仅误差减小时生效；绝对上限复用 OutMax，下限 brake_min 防卡死 */
@@ -115,7 +121,7 @@ void PID_Update(PID_t *pid) {
 		float env = sqrtf(2.0f * pid->brake_gain * (e < 0.0f ? -e : e));
 		if (pid->brake_min > 0.0f && env < pid->brake_min) env = pid->brake_min;
 		if (env > pid->OutMax) env = pid->OutMax;
-		if ((pid->Error0 - pid->Error1) < 0.0f) { /* 误差在减小 → 正在靠近目标 */
+		if (d_src < 0.0f) { /* 误差在减小 → 正在靠近目标 */
 			if (pid->Out > env) pid->Out = env;
 			if (pid->Out < -env) pid->Out = -env;
 		}

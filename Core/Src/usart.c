@@ -155,11 +155,14 @@ static void uart_tx_poll(const uint8_t *buf, uint16_t len) {
  *        同一时刻不得再发其它文本，避免破坏 VOFA 帧解析
  */
 void VOFA_SendFrame(const int32_t *data, uint8_t ch_num) {
-	char	msg[64];
+	char	msg[160]; /* 11 通道 worst case：11×11 + 10 逗号 + '\n' = 132 */
 	char   *p = msg;
 	uint8_t i;
 	for (i = 0; i < ch_num; i++) {
 		p += (uint16_t) snprintf(p, (size_t) (msg + sizeof(msg) - p), "%s%d", i ? "," : "", (int) data[i]);
+		if (p > msg + sizeof(msg) - 2) {
+			p = msg + sizeof(msg) - 2; /* 截断时 snprintf 返回"本应长度"，需钳位，留出 '\n' */
+		}
 	}
 	*p++ = '\n';
 	uart_tx_poll((const uint8_t *) msg, (uint16_t) (p - msg));

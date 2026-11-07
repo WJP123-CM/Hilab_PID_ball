@@ -26,6 +26,13 @@
 #define VALID_WIN_DEFAULT_MS 5000u
 static uint32_t s_valid_win_ms = VALID_WIN_DEFAULT_MS;
 
+/* 最小回波率阈值（MCPS）：预设值为 0x00C0（9.7 定点）= 1.5 MCPS。
+ * 2026-11-07 实测：管子远端 360mm 以上因回波不足报 status=7（绕回判决失败）。
+ * 按回波 ∝ 1/d² 估算，边界距离 d(τ) = 360·√(1.5/τ)；取 0.9 使边界约 465mm，
+ * 覆盖管长 500mm、球心最远约 470mm 的可见需求（这一段仅用于"看清并调回"，
+ * 非工作区间）。代价：远端读数噪声变大，由中值 + KF 新息门控兜住。 */
+#define TOF_MIN_COUNT_RATE_MCPS 0.9f
+
 /* ==================== 传感器驱动（本模块私有） ========================== */
 
 static VL53L1_Dev_t s_dev; /* 设备句柄 */
@@ -117,7 +124,14 @@ int Tof_InitSensor(const TofSensorCfg_t *cfg) {
 	VL53_INIT_STEP(VL53L1_SetDistanceMode(&s_dev, (cfg->distance_mode == 0u) ? VL53L1_DISTANCEMODE_SHORT : VL53L1_DISTANCEMODE_LONG), "SetDistanceMode");
 	VL53_INIT_STEP(VL53L1_SetMeasurementTimingBudgetMicroSeconds(&s_dev, cfg->timing_budget_us), "SetTimingBudget");
 	VL53_INIT_STEP(VL53L1_SetInterMeasurementPeriodMilliSeconds(&s_dev, cfg->inter_period_ms), "SetInterMeasurementPeriod");
-	/* 7. 启动连续测量模式 */
+	/* 7. 放宽最小回波率阈值（覆盖管子远端）。必须放在 SetMeasurementTimingBudget
+	 *    之后 —— 它会按 tuning parm 重算 range_config__min_count_rate_rtn_limit_mcps，
+	 *    在这之前设置会被覆盖掉 */
+	VL53_INIT_STEP(VL53L1_SetLimitCheckValue(&s_dev,
+						 VL53L1_CHECKENABLE_SIGNAL_RATE_FINAL_RANGE,
+						 (FixPoint1616_t) (TOF_MIN_COUNT_RATE_MCPS * 65536.0f)),
+				   "SetLimitCheckValue");
+	/* 8. 启动连续测量模式 */
 	VL53_INIT_STEP(VL53L1_StartMeasurement(&s_dev), "StartMeasurement");
 
 	return 0;
@@ -228,7 +242,9 @@ void Tof_Tick(TofFilter_t *f) {
 		g_tof.filt_mm	 = f->last_filt_mm; /* 有效帧才写，无有效输出时保持 0 */
 		g_tof.pos_cm_x10 = TofFilter_GetCmX10(f);
 	} else {
-		g_tof.raw_mm = 0; /* 通信失败帧不输出伪距离 */
+		/* 状态无效但通信正常（rstat>0）：保留芯片实际测到的距离，便于诊断远端弱回波；
+		 * 只有通信失败（-1/-2，dist 本身为 0）才写 0。滤波仍按无效帧处理 */
+		g_tof.raw_mm = (rstat > 0) ? dist_mm : 0;
 		/* 无效帧不推进 EMA，但仍推进 KF 预测（kf_miss 累计用于回退判据） */
 		(void) TofFilter_Update(f, 0, rstat, HAL_GetTick());
 	}
