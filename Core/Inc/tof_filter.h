@@ -43,7 +43,7 @@ extern "C" {
 #define TOF_FILTER_MAX_VALID_MM 500
 
 /* 默认零点：仅用于上电显示；正式测试必须用 Z 命令标定 */
-#define TOF_FILTER_ZERO_DEFAULT_MM 131  /* 2026-10-29 实测静止零点：60s 930帧 mean=131.44mm, σ=1.87mm */
+#define TOF_FILTER_ZERO_DEFAULT_MM 146 /* 2026-11-07 传感器零点漂移，由 131 改到 146（静止读数） */
 
 /* ===================== KF 主链参数（EMA 并行作对照） =====================
  * 接入方式：EMA 链照旧运行，仅作对比与遥测；输出始终取 KF，不切换。

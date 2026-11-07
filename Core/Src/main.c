@@ -71,10 +71,10 @@ build/Debug/Hilab_PID.elf verify reset exit'"
 #define BALL_KP_HZ_PER_CM_X10 4.0f								/* Hz / 0.1cm 偏差（pos=30 即 3cm 时 120Hz） */
 /* 外环积分偏置：吃零点误差与"维持角"的常值偏差，位置相关的部分由它在每个停留点自己学。
  * 必须加在制动包络外面 —— |e|=48mm 时包络已把 Out 夹到 44 counts，积分加在里面会被一起夹掉。
- * 增益取自串口第 2 个参数（千分比）：0 = 关闭（上电默认），10 = 0.01。
- * 积分时间 = Kp/Ki = 2/0.01 = 200 拍 = 20s，远离 4.5s 的极限环周期。
- * 限幅 80 counts：够补实测最大维持角偏差（85），又不至于把杆带偏。 */
-#define BALL_I_BIAS_MAX		  80.0f /* 积分偏置默认上限（counts）；可经串口第 8 参数在线改 */
+ * 增益取自串口第 2 个参数（千分比）：0 = 关闭，10 = 0.01；上电默认 0.03。
+ * 积分时间 = Kp/Ki = 2/0.03 ≈ 67 拍 ≈ 6.7s；配合"卡住才积分"不会积成极限环。
+ * 限幅 60 counts：够补实测维持角偏差（拧紧后 ~30~40），又不至于把杆带偏。 */
+#define BALL_I_BIAS_MAX		  60.0f /* 积分偏置默认上限（counts）；可经串口第 8 参数在线改 */
 /* 条件积分（2026-11-07）：只在球"卡住"时累加，球一动就冻结，避免把动量积成过冲。
  * 卡住判据不能直接用 kf_vel：静止噪声 σ≈8.5mm/s，而慢速爬行只有 ~8mm/s，
  * 两者重叠。故先做一阶低通（外环 100ms，α=0.2 → τ≈0.45s，噪声降到 ~3mm/s），
@@ -101,11 +101,12 @@ build/Debug/Hilab_PID.elf verify reset exit'"
 /* USER CODE BEGIN PV */
 /* ---- 串口 RX 解析结果（文件级，主循环读写） ---- */
 #define RX_VAL_MAX                                                                                                         \
-	8u										/* 一行最多解析 8 个逗号分隔数值：                                             \
-											 * Kp,Ki,Kd,brake_gain,brake_min,src,target,bias_max                           \
+	9u										/* 一行最多解析 9 个逗号分隔数值：                                             \
+											 * Kp,Ki,Kd,brake_gain,brake_min,src,target,bias_max,deadzone                 \
 											 * src: 0/省略 = KF 输出（默认），1 = EMA 输出（仅对照实验） \
 											 * target: 外环目标位置，单位 0.1cm（正 = 球靠近传感器）     \
-											 * bias_max: 积分偏置限幅（counts），省略则保持当前值 */
+											 * bias_max: 积分偏置限幅（counts），省略则保持当前值        \
+											 * deadzone: 外环死区（mm，0~20；带内 Out=0） */
 static float			rx_val[RX_VAL_MAX]; /* 解析出的数值（支持小数） */
 static uint8_t			rx_cnt	 = 0;		/* 本行实际解析出的个数（0~RX_VAL_MAX） */
 static volatile uint8_t rx_valid = 0;		/* 1 = 收到新参数行，等主循环接管写入一次 */
@@ -125,7 +126,9 @@ bool					runstate   = 1; /* 默认上电即运行，按键单击翻转为停止 
 /* ---- 外环积分偏置（挂在制动包络外，见 BALL_I_BIAS_MAX 的说明） ----
  * 不用 ball_pid.Ki：PID_Update 内的 I 项会和 P+D 一起被包络夹掉，
  * 而这里要的正是"包络夹不住的常值角度"。 */
-static float s_ball_ki = 0.0f; /* 积分增益（0 = 关闭；串口第 2 参数，千分比） */
+/* 上电默认开启条件积分（2026-11-07 实测：机械拧紧 + Ki=0.03/cap=60 后残差 +0.2mm）。
+ * 串口第 2 参数仍可在线改，发 0 会同时清掉偏置。 */
+static float s_ball_ki = 0.03f; /* 积分增益（串口第 2 参数，千分比） */
 static float s_i_bias  = 0.0f; /* 积分偏置（counts），直接叠加到内环目标 */
 /* 卡住判据用的低通速度（mm/s）：外环 100ms 更新，α=0.2 → τ≈0.45s */
 static float s_vel_slow = 0.0f;
@@ -150,6 +153,7 @@ PID_t ball_pid = {
 	.brake_min	= 0.5f,
 	.Out		= 200.0f,
 	.use_vel_d	= 1, /* D 项改用 KF 速度输入，不再对位置差分（见 PID_t 的 Vel 说明） */
+	.deadzone	= 5.0f, /* 位置死区（mm）：带内 Out=0、电机不动；实测残差 ≤5mm 可接受 */
 };
 /* ---- 位置内环 PID（编码器反馈 → 步进频率 Hz） ---- */
 PID_t encoder_pid = {
@@ -256,9 +260,9 @@ int main(void)
   /* 滤波器与零点初始化 */
   {
 	  TofFilter_Init(&g_tof_filter, TOF_FILTER_ALPHA_DEFAULT_MILLI, TOF_FILTER_ZERO_DEFAULT_MM);
-	  /* 硬件标定零点：2026-10-29 实测 60s/930帧 mean=131.4mm, σ=1.87mm——
-	   * 小球静止时 VL53L1X 原始距离的期望值；Z 命令可在线覆盖 */
-	  TofFilter_SetZeroMm(&g_tof_filter, 131);
+	  /* 硬件标定零点：2026-11-07 实测传感器零点漂到 151mm（原 131mm），
+	   * 按当前静止读数重新标定，避免位置整体偏 20mm */
+	  TofFilter_SetZeroMm(&g_tof_filter, 151);
   }
   /* 执行器与编码器启动：两者都必须在 MX_TIM2_Init/MX_TIM3_Init 之后调用 */
   Motor_Init();	  /* 校验 TIM2 分频、设定 STEP 占空比、对齐 DIR 初态 */
@@ -347,6 +351,18 @@ int main(void)
 				  s_i_bias = -s_i_bias_max;
 			  }
 		  }
+		  /* 第 9 个参数：外环死区（mm，夹到 [0,20]）。
+		   * |e| 在带内时 PID 输出直接置 0；0 = 关闭 */
+		  if (rx_cnt > 8) {
+			  float dz = rx_val[8];
+
+			  if (dz < 0.0f) {
+				  dz = 0.0f;
+			  } else if (dz > 20.0f) {
+				  dz = 20.0f;
+			  }
+			  ball_pid.deadzone = dz;
+		  }
 	  }
 	  if (tof_tick) {
 		  tof_tick = 0;
@@ -373,14 +389,20 @@ int main(void)
 	   * ch0 enc_target  ch1 enc_actual  ch2 enc_out_hz  ch3 ball_target
 	   * ch4 raw_mm      ch5 ema_mm      ch6 kf_pos      ch7 kf_vel
 	   * ch8 kf_state    ch9 ball_out    ch10 range_status
+	   * 位置通道统一为"相对零点、靠近 ToF 为正"（zero − 距离），与 Target 同向；
+	   * 距离为 0 表示尚无数据，保持 0 不上翻。
 	   * kf_state 位域：bit0=bad_streak≥3，bit1~4=bad_streak(0~15)，bit5~7=kf_miss(0~7)
 	   * range_status：0=有效；>0 为 VL53L1X RangeStatus（1 sigma 超限 / 2 信号弱 /
 	   *   7 绕回失败 等）；-1 等数据超时 / -2 读取失败 / -3 滤波器量程拒绝 */
 	  if (vofa_tick) {
-		  vofa_tick		   = 0;
+		  vofa_tick = 0;
+		  int32_t z	   = (int32_t) g_tof_filter.zero_mm;
+		  int32_t rawp = (g_tof.raw_mm > 0) ? z - (int32_t) g_tof.raw_mm : 0;
+		  int32_t emap = (g_tof.ema_mm > 0) ? z - (int32_t) g_tof.ema_mm : 0;
+		  int32_t kfp  = (g_tof.filt_mm > 0) ? z - (int32_t) g_tof.filt_mm : 0;
 		  int32_t vofa[11] = {(int32_t) encoder_pid.Target, (int32_t) encoder_pid.Actual, (int32_t) encoder_pid.Out,
-							  (int32_t) ball_pid.Target,	   (int32_t) g_tof.raw_mm,		  (int32_t) g_tof.ema_mm,
-							  (int32_t) g_tof.filt_mm,	   (int32_t) g_tof.kf_vel,		  (int32_t) g_tof.kf_state,
+							  (int32_t) ball_pid.Target,	   rawp,					  emap,
+							  kfp,						   (int32_t) g_tof.kf_vel,	  (int32_t) g_tof.kf_state,
 							  (int32_t) ball_pid.Out,	   (int32_t) g_tof.range_status};
 		  VOFA_SendFrame(vofa, 11);
 	  }
@@ -420,7 +442,8 @@ int main(void)
 	  if (oled_tick) {
 		  oled_tick = 0;
 
-		  int16_t pos	  = g_tof.pos_cm_x10;
+		  /* 屏幕位置与遥测同向：靠近 ToF 为正（pos_cm_x10 = 距离 − 零点） */
+		  int16_t pos	  = (int16_t) (-g_tof.pos_cm_x10);
 		  char	  sign	  = (pos < 0) ? '-' : ' ';
 		  int32_t abs_pos = (pos < 0) ? -(int32_t) pos : (int32_t) pos;
 		  uint8_t mot_en  = 0u;
@@ -543,10 +566,13 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 		/* Target 由串口命令设定（第 7 个参数），此处不再周期覆盖；
 		 * pos_cm_x10 取负号后作为反馈，故 Target>0 表示球向传感器方向移动 */
 		float vel_kf;
+		float e_now;
 
 		/* 外推位置：用 KF 速度把上一帧位置补到当前时刻，消除 0~34ms 采样滞后。
 		 * 限幅与回退判断都在 TofFilter_GetCmX10At 内部，ISR 里只做一次调用 */
 		ball_pid.Actual = -(float) TofFilter_GetCmX10At(&g_tof_filter, HAL_GetTick());
+		/* 死区内 PID_Update 会提前返回、不刷新 Error0，故这里用当拍误差做积分判据 */
+		e_now = ball_pid.Target - ball_pid.Actual;
 
 		/* D 项唯一速度源：Actual = -(pos)，故 de/dt = +kf_vel；外环 100ms，
 		 * 每拍误差增量 = 0.1 × kf_vel（与 PID 内部差分同量纲）。
@@ -566,10 +592,11 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 		 * 球一动就停止积分，高速段还会按 τ≈1.4s 泄放，避免把动量积成过冲——
 		 * 这是之前 Ki=0.02/cap=300 弛张振荡的直接原因。 */
 		if (runstate && !TofFilter_IsStale(&g_tof_filter) &&
-			ball_pid.Out > ball_pid.OutMin + 1.0f && ball_pid.Out < ball_pid.OutMax - 1.0f) {
+			ball_pid.Out > ball_pid.OutMin + 1.0f && ball_pid.Out < ball_pid.OutMax - 1.0f &&
+			(ball_pid.deadzone <= 0.0f || e_now > ball_pid.deadzone || e_now < -ball_pid.deadzone)) {
 			if (s_vel_slow < BALL_I_STUCK_MM_S && s_vel_slow > -BALL_I_STUCK_MM_S &&
-				(ball_pid.Error0 > BALL_I_DEADBAND || ball_pid.Error0 < -BALL_I_DEADBAND)) {
-				s_i_bias += s_ball_ki * ball_pid.Error0;
+				(e_now > BALL_I_DEADBAND || e_now < -BALL_I_DEADBAND)) {
+				s_i_bias += s_ball_ki * e_now;
 				if (s_i_bias > s_i_bias_max) {
 					s_i_bias = s_i_bias_max;
 				} else if (s_i_bias < -s_i_bias_max) {

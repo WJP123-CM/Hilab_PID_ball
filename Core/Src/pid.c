@@ -17,18 +17,17 @@
 
 #include <math.h>
 
-
 /* ===================== 初始化 / 配置接口 ================================== */
 
 /**
  * @brief  按参数表初始化并复位运行态
  */
 void PID_InitFromCfg(PID_t *pid, const PIDCfg_t *cfg) {
-	pid->Kp      = cfg->Kp;
-	pid->Ki      = cfg->Ki;
-	pid->Kd      = cfg->Kd;
-	pid->OutMin  = cfg->OutMin;
-	pid->OutMax  = cfg->OutMax;
+	pid->Kp		 = cfg->Kp;
+	pid->Ki		 = cfg->Ki;
+	pid->Kd		 = cfg->Kd;
+	pid->OutMin	 = cfg->OutMin;
+	pid->OutMax	 = cfg->OutMax;
 	pid->i_limit = cfg->i_limit;
 	/* 制动包络默认关闭，调用方按需手动赋值（brake_gain > 0 启用） */
 	pid->brake_gain = 0.0f;
@@ -59,10 +58,10 @@ void PID_SetOneGain(PID_t *pid, PIDGain_t gain, float value) {
  * @brief  清积分与误差历史（切换工况或重新使能时调用）
  */
 void PID_Reset(PID_t *pid) {
-	pid->Error0   = 0.0f;
-	pid->Error1   = 0.0f;
+	pid->Error0	  = 0.0f;
+	pid->Error1	  = 0.0f;
 	pid->ErrorInt = 0.0f;
-	pid->Out      = 0.0f;
+	pid->Out	  = 0.0f;
 }
 
 /* ===================== 单步计算 =========================================== */
@@ -76,13 +75,14 @@ void PID_Reset(PID_t *pid) {
 void PID_Update(PID_t *pid) {
 	float d_src; /* D 项源：误差差分，或调用方给的外部速度（每拍增量） */
 
-	/* 0) 死区判断：误差进入 ±deadzone 时保持上一拍 Out（不重算、不积分），
-	 *    闭环靠上一拍输出维持当前状态，避免在目标附近来回抖。
-	 *    例外：Target=0（停机）必须走正常计算，否则输出停在死区里后
-	 *    会一直保持上一拍非零输出，电机停不下来 */
-	if (pid->deadzone > 0.0f && pid->Target != 0.0f) {
+	/* 0) 死区判断：误差进入 ±deadzone 时直接把 Out 置 0（零角度指令），
+	 *    不保持上一拍输出、也不更新误差历史，避免在目标附近追噪声。
+	 *    置 0 后必须 return，否则后面的 PID 计算会覆盖。
+	 *    Target=0 也是有效目标（球回中心），故不做例外。 */
+	if (pid->deadzone > 0.0f) {
 		float e = pid->Target - pid->Actual;
 		if (e < pid->deadzone && e > -pid->deadzone) {
+			pid->Out = 0.0f;
 			return;
 		}
 	}

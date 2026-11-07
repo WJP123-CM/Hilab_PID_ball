@@ -55,7 +55,7 @@
  *     max_valid_mm 同时用于 TofFilter_SetZeroMm 的零点夹取。
  *
  * 【零点与位置】
- *   zero_mm  (运行时可调，Z 命令标定，默认 131 mm)
+ *   zero_mm  (运行时可调，Z 命令标定，默认 151 mm；2026-11-07 由 131 修正)
  *     静止时小球到传感器的期望距离。pos_cm_x10 = filt − zero。
  *     本模块不再提供方向符号；外环方向统一由 main.c 的 BALL_X_ENC_SIGN 决定。
  *
