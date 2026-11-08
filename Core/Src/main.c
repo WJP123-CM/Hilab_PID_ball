@@ -29,8 +29,6 @@ build/Debug/Hilab_PID.elf verify reset exit'"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "cmd.h" /* 上位机行协议：A/Z/P/I/D/R */
-/* ctrl.c 已禁用，用户自行在 main.c 编写控制逻辑 */
 #include "encoder.h" /* 编码器计数/Z 校准/掉电保存 */
 #include "key.h"	 /* PA0 按键消抖与事件队列 */
 #include "motor.h"	 /* 电机控制（含 g_mot_en） */
@@ -195,7 +193,7 @@ PID_t vel_pid = {
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-/* 控制与命令接口由 ctrl.h / cmd.h 提供（非 static）。 */
+/* 控制逻辑与串口命令解析均在 main.c 内实现。 */
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
