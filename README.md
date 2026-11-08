@@ -6,12 +6,12 @@
 
 ## 它做什么
 
-- **定点**：目标位置由串口下发（单位 0.1cm），球移动到目标后保持；目标附近 5mm 内不动作，用于抑制追噪声。
+- **定点**：目标位置由串口下发（单位 0.1cm），球移动到目标后保持；进入目标附近 5mm 的死区后不再输出新的修正量，用于抑制追噪声。
 - **折返**：上位机按序下发 0 → 一端 → 另一端 → 0，系统逐段闭环到位。
 - **正弦跟踪**：上位机每 50ms 下发一次目标，球跟随 ±8cm / 4s 的正弦轨迹（**指标未达标**，见下）。
 - **在线整定**：一行逗号分隔的 14 个整数经串口下发，实时改外环/内环/前馈/限幅，不用重新烧录。
 - **遥测**：USART1 以 50Hz 输出 11 通道 VOFA FireWater 帧，可直接用 VOFA+ 观察。
-- **按键启停**：PA0 单击切换运行/停止，停止时内环目标为 0、电机不再输出脉冲。
+- **按键启停**：PA0 单击切换运行/停止；停止时电机脉冲频率置 0，内环仍在后台运算。
 
 ## 硬件方案
 
@@ -75,6 +75,12 @@ flowchart LR
 
 ## 快速开始
 
+环境要求：
+
+- `arm-none-eabi-gcc` 交叉工具链、CMake、Ninja、openocd
+- 串口驱动；VOFA+ 可选，用于观察波形
+- 仓库内 `.vscode` 配置按 `C:/msys64/ucrt64` 编写，其他环境需自行修改 `settings.json` 与 `launch.json` 中的工具路径
+
 ```powershell
 cmake --preset Debug
 cmake --build --preset Debug
@@ -83,7 +89,7 @@ openocd -f openocd_stlink.cfg -c "program build/Debug/Hilab_PID.elf verify reset
 
 - 烧录配置还有 `openocd_jlink.cfg`、`openocd_dap.cfg` 可选。
 - 串口参数行格式与通道定义见 [docs/architecture.md](docs/architecture.md)。
-- 采集与评估脚本：`tools/tof_acquire.py`、`tools/tof_eval.py`，按 [docs/architecture.md](docs/architecture.md) 的通道表配置即可。
+- `tools/tof_acquire.py`、`tools/tof_eval.py` 是 8 通道旧固件时期的实验脚本，与当前 11 通道协议不兼容，仅用于分析 `tools/data/` 下的历史数据；当前固件的采集请按 [docs/architecture.md](docs/architecture.md) 的协议自行实现。
 
 ## 工程实现要点
 
@@ -95,6 +101,6 @@ openocd -f openocd_stlink.cfg -c "program build/Debug/Hilab_PID.elf verify reset
 
 ## 使用与安全
 
-- 仓库未附 LICENSE 文件；如需引用代码或结论，请注明出处。
+- 本项目采用 [MIT 许可证](LICENSE)。
 - 所用激光模块功率低于 5mW，调试时避免直射人眼。
 - 步进电机上电即使不转也会锁定绕组，拆装机械前先断电。

@@ -125,7 +125,7 @@ TIM1 1ms 中断
 
 ### 7.1 参数行（下行）
 
-一行逗号分隔的 1~14 个**整数**，按顺序覆盖参数；缺省字段保持不变：
+一行逗号分隔的 1~14 个**整数**，按顺序覆盖参数。省略只能从行尾开始——行中留空会截断该字段及其后的全部字段；写成小数会从该处断开。当前固件不支持字母命令，旧脚本里的 `A`、`Z`、`H1` 在这一版上无效。
 
 ```text
 Kp,Ki,Kd,brake_gain,brake_min,src,target,bias_max,deadzone,ff_gain,vel_kp,vel_ki,out_max,out_min
